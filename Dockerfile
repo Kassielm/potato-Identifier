@@ -38,10 +38,10 @@ RUN apt-get -q -y update && \
 RUN python3 -m venv ${APP_ROOT}/.venv --system-site-packages
 
 # Install pip packages on venv
-COPY requirements.txt /requirements.txt
+COPY requirements-release.txt /requirements-release.txt
 RUN . ${APP_ROOT}/.venv/bin/activate && \
-    pip3 install --upgrade pip && pip3 install -r requirements.txt && \
-    rm requirements.txt
+    pip3 install --upgrade pip && pip3 install -r requirements-release.txt && \
+    rm requirements-release.txt
 
 # Copy the application source code in the workspace to the $APP_ROOT directory
 # path inside the container, where $APP_ROOT is the torizon_app_root

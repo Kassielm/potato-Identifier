@@ -1,5 +1,7 @@
 python-snap7==2.0.2
+tflite-runtime
 pypylon
-opencv-python
+opencv-python==4.12.0.88
+pypylon==4.2.0
 numpy
 tflite-runtime
