@@ -1,0 +1,20 @@
+services:
+  potato-identifier:
+    container_name: potato-identifier
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kassiell/potato-identifier
+    privileged: true
+    network_mode: "host"
+    devices:
+      - "/dev/bus/usb/002/004:/dev/bus/usb/002/004"
+    environment:
+      - "DISPLAY=${DISPLAY}"
+      - LD_LIBRARY_PATH=/opt/pylon/lib
+    volumes:
+      - "/tmp/.X11-unix:/tmp/.X11-unix:rw"
+      - ./src:${APP_ROOT}/src
+      - ./data:${APP_ROOT}/data
+      - /dev:/dev
+      - /opt/pylon_drivers:/opt/pylon

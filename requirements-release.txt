@@ -1,0 +1,5 @@
+python-snap7==2.0.2
+pypylon
+opencv-python
+numpy
+tflite-runtime
