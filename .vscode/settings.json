@@ -5,7 +5,7 @@
     "torizon_debug_port3": "",
     "python.defaultInterpreterPath": "./.venv/bin/python3",
     "torizon_psswd": "conecsa",
-    "torizon_login": "conecsa",
+    "torizon_login": "torizon",
     "torizon_ip": "192.168.100.174",
     "torizon_ssh_port": "22",
     "host_ip": "192.168.100.146",

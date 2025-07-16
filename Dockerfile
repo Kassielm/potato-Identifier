@@ -12,7 +12,7 @@ ARG BASE_VERSION=4
 ##
 # Directory of the application inside container
 ##
-ARG APP_ROOT=/app
+ARG APP_ROOT=
 
 FROM --platform=linux/${IMAGE_ARCH} \
     torizon/debian:${BASE_VERSION} AS deploy
@@ -27,6 +27,10 @@ RUN apt-get -q -y update && \
     python3-minimal \
     python3-pip \
     python3-venv \
+    python3-tk \
+    libgl1 \
+    libglib2.0-0 \
+    qtwayland5 \
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     # __torizon_packages_prod_start__
     # __torizon_packages_prod_end__
@@ -47,21 +51,10 @@ RUN . ${APP_ROOT}/.venv/bin/activate && \
 # path inside the container, where $APP_ROOT is the torizon_app_root
 # configuration defined in settings.json
 COPY ./src ${APP_ROOT}/src
+COPY data/ ${APP_ROOT}/data/
 
 WORKDIR ${APP_ROOT}
-
-RUN apt-get -q -y update && \
-    apt-get -q -y install --no-install-recommends \
-    python3-minimal \
-    python3-pip \
-    python3-venv \
-    && apt-get clean && apt-get autoremove && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY src/ ./src/
-COPY data/ ./data/
-
 ENV APP_ROOT=${APP_ROOT}
 # Activate and run the code
 
-CMD ["python3", "-u", "src/main.py"]
+CMD . ${APP_ROOT}/.venv/bin/activate && python3 -u src/main.py --no-sandbox
