@@ -27,10 +27,8 @@ RUN apt-get -q -y update && \
     python3-minimal \
     python3-pip \
     python3-venv \
-    python3-tk \
     libgl1 \
     libglib2.0-0 \
-    qtwayland5 \
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     # __torizon_packages_prod_start__
     # __torizon_packages_prod_end__
