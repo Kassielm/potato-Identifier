@@ -29,13 +29,21 @@ RUN apt-get -q -y update && \
     python3-venv \
     libgl1 \
     libglib2.0-0 \
-    libqt5gui5 \
+    libgl1-mesa-glx \
+    libegl1 \
+    qtwayland5 \
+    libxext6 \
+    libxrender1 \
+    libxcb-xinerama0 \
+    libxcb-cursor0 \
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     # __torizon_packages_prod_start__
     # __torizon_packages_prod_end__
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     && apt-get clean && apt-get autoremove && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    ldconfig && \
+    usermod -aG video root
 
 # Create virtualenv
 RUN python3 -m venv ${APP_ROOT}/.venv --system-site-packages

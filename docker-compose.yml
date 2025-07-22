@@ -7,20 +7,15 @@ services:
     image: kassiell/potato-identifier
     privileged: true
     network_mode: "host"
+    user: "1000:1000"
+    group_add:
+      - "44"
+      - "20"
     devices:
       - "/dev:/dev"
     environment:
       - "DISPLAY=:0"
       - LD_LIBRARY_PATH=/opt/pylon/lib
-      - "QT_DEBUG_PLUGINS=1"
-      - WAYLAND_DISPLAY=wayland-0
-      - XDG_RUNTIME_DIR=/var/run
-      - "XDG_RUNTIME_DIR=/tmp/xdg"
     volumes:
-      - "/tmp/.X11-unix:/tmp/.X11-unix:rw"
-      - "/run/user/1000:/tmp/xdg:rw"
       - /dev:/dev
       - /opt/pylon_drivers:/opt/pylon
-      - type: bind
-        source: /run/user/1000/wayland-0
-        target: /var/run/wayland-0
