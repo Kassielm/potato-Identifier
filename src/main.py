@@ -1,5 +1,6 @@
 import cv2
 import logging
+import os
 import numpy as np
 import tflite_runtime.interpreter as tflite
 from pypylon import pylon
@@ -7,6 +8,12 @@ from plc import Plc # Supondo que seu arquivo plc.py está acessível
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+USE_HW_ACCELERATED_INFERENCE = True
+
+## The system returns the variables as Strings, so it's necessary to convert them where we need the numeric value
+if os.environ.get("USE_HW_ACCELERATED_INFERENCE") == "0":
+    USE_HW_ACCELERATED_INFERENCE = False
 
 def supressao_nao_maxima(boxes, scores, iou_threshold):
     """Aplica Supressão Não-Máxima (NMS) para remover caixas sobrepostas."""
@@ -35,7 +42,7 @@ def supressao_nao_maxima(boxes, scores, iou_threshold):
     return keep
 
 class VisionSystem:
-    def __init__(self, model_path: str = 'data/models/best_float32.tflite', labels_path: str = 'data/models/labels.txt'):
+    def __init__(self, model_path: str = 'data/models/best_float32_edgetpu.tflite', labels_path: str = 'data/models/labels.txt'):
         # --- Configurações de Detecção ---
         self.CONFIDENCE_THRESHOLD = 0.5
         self.IOU_THRESHOLD = 0.45
@@ -58,15 +65,27 @@ class VisionSystem:
         self.labels = []
         self._initialize_model(model_path, labels_path)
 
-    def _initialize_model(self, model_path, labels_path):
+    def _initialize_model(self, model, labels_path):
         """Carrega o modelo TFLite e os metadados."""
         try:
             # Carrega os nomes das classes (labels)
+            if(USE_HW_ACCELERATED_INFERENCE):
+                delegates = [tflite.load_delegate("/usr/lib/libvx_delegate.so")]
+            else:
+                delegates = []
             with open(labels_path, 'r') as f:
                 self.labels = [line.strip() for line in f.readlines()]
-
-            # Carrega o interpretador TFLite
-            self.interpreter = tflite.Interpreter(model_path=model_path)
+            try:
+                self.interpreter = tflite.Interpreter(
+                    model_path=model,
+                    experimental_delegates=delegates
+                )
+            except (ValueError, OSError) as e:
+                logger.warning(f"Não foi possível carregar o delegate da NPU: {e}")
+                logger.warning("A inferência será executada na CPU (fallback).")
+                # Se falhar, carrega o interpretador sem o delegate (usando a CPU)
+                self.interpreter = tflite.Interpreter(model_path=model)
+                
             self.interpreter.allocate_tensors()
 
             # Obtém detalhes de entrada e saída
@@ -77,7 +96,7 @@ class VisionSystem:
             self.input_height = self.input_details['shape'][1]
             self.input_width = self.input_details['shape'][2]
             
-            logger.info(f"Modelo TFLite '{model_path}' carregado com sucesso.")
+            logger.info(f"Modelo TFLite '{model}' carregado com sucesso.")
             logger.info(f"Tamanho de entrada do modelo: {self.input_width}x{self.input_height}")
 
         except Exception as e:

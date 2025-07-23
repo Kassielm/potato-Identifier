@@ -16,6 +16,8 @@ services:
     environment:
       - "DISPLAY=:0"
       - LD_LIBRARY_PATH=/opt/pylon/lib
+      - USE_HW_ACCELERATED_INFERENCE=1
+      - USE_GPU_INFERENCE=0
     volumes:
       - /dev:/dev
       - /opt/pylon_drivers:/opt/pylon

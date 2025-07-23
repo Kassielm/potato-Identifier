@@ -7,7 +7,7 @@ ARG IMAGE_ARCH=arm64
 ##
 # Base container version
 ##
-ARG BASE_VERSION=4
+ARG BASE_VERSION=3.2.1-bookworm
 
 ##
 # Directory of the application inside container
@@ -44,6 +44,21 @@ RUN apt-get -q -y update && \
     rm -rf /var/lib/apt/lists/* && \
     ldconfig && \
     usermod -aG video root
+
+WORKDIR /build
+COPY recipes /build
+### Install TensorFlow Lite
+RUN ls -la /build
+RUN chmod +x ./*.sh
+RUN ./nn-imx_1.3.0.sh
+RUN ./tim-vx.sh
+RUN ./tensorflow-lite_2.9.1.sh
+RUN ./tflite-vx-delegate.sh
+
+## Install runtime TF Lite dependencies ## 
+RUN apt-get -y update && apt-get install -y \
+    libovxlib \
+    && apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
 
 # Create virtualenv
 RUN python3 -m venv ${APP_ROOT}/.venv --system-site-packages
