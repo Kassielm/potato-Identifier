@@ -13,6 +13,12 @@ services:
       - "20"
     devices:
       - "/dev:/dev"
+      - "/dev/galcore:/dev/galcore"
+    # Permissão para acessar a primeira webcam conectada
+      - "/dev/video0:/dev/video0"
+    # Permissões para outros subsistemas gráficos e de vídeo
+      - "/dev/dri:/dev/dri"
+      - "/dev/dma_heap:/dev/dma_heap"
     environment:
       - "DISPLAY=:0"
       - LD_LIBRARY_PATH=/opt/pylon/lib

@@ -1,252 +1,196 @@
 import cv2
-import logging
-import os
 import numpy as np
 import tflite_runtime.interpreter as tflite
-from pypylon import pylon
-from plc import Plc # Supondo que seu arquivo plc.py está acessível
+import os
+import time
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# --- CONFIGURAÇÕES ---
+MODEL_PATH = "data/models/best_int8.tflite"
+LABELS_PATH = "data/models/labels.txt"
+CAMERA_INDEX = 0  # 0 para a primeira webcam conectada
+INPUT_WIDTH = 320 # O mesmo 'imgsz' que você usou no treino e exportação
+INPUT_HEIGHT = 320
+CONFIDENCE_THRESHOLD = 0.5 # Limiar de confiança para mostrar uma detecção (0.0 a 1.0)
 
-USE_HW_ACCELERATED_INFERENCE = True
+class ObjectDetector:
+    def __init__(self, model_path, labels_path):
+        """Inicializa o detector, carrega o modelo e o delegate da NPU."""
+        print("Inicializando o detector de objetos...")
 
-## The system returns the variables as Strings, so it's necessary to convert them where we need the numeric value
-if os.environ.get("USE_HW_ACCELERATED_INFERENCE") == "0":
-    USE_HW_ACCELERATED_INFERENCE = False
+        # Carrega os nomes das classes (labels)
+        with open(labels_path, 'r') as f:
+            self.labels = [line.strip() for line in f.readlines()]
+        print(f"Classes carregadas: {self.labels}")
 
-def supressao_nao_maxima(boxes, scores, iou_threshold):
-    """Aplica Supressão Não-Máxima (NMS) para remover caixas sobrepostas."""
-    if len(boxes) == 0:
-        return []
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = boxes[:, 2]
-    y2 = boxes[:, 3]
-    areas = (x2 - x1) * (y2 - y1)
-    order = scores.argsort()[::-1]
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1)
-        h = np.maximum(0.0, yy2 - yy1)
-        intersection = w * h
-        iou = intersection / (areas[i] + areas[order[1:]] - intersection)
-        inds = np.where(iou <= iou_threshold)[0]
-        order = order[inds + 1]
-    return keep
+        # Verifica e carrega o delegate da NPU (a chave para a aceleração)
+        vx_delegate_path = '/usr/lib/libvx_delegate.so'
+        if os.path.exists(vx_delegate_path):
+            experimental_delegates = [tflite.load_delegate(vx_delegate_path)]
+            print(">>> Delegate da NPU encontrado e carregado! A inferência será acelerada. <<<")
+        else:
+            experimental_delegates = None
+            print("AVISO: Delegate da NPU não encontrado. Rodando na CPU (será mais lento).")
 
-class VisionSystem:
-    def __init__(self, model_path: str = 'data/models/best_float32_edgetpu.tflite', labels_path: str = 'data/models/labels.txt'):
-        # --- Configurações de Detecção ---
-        self.CONFIDENCE_THRESHOLD = 0.5
-        self.IOU_THRESHOLD = 0.45
+        # Carrega o modelo TFLite no interpretador, usando o delegate se disponível
+        self.interpreter = tflite.Interpreter(
+            model_path=model_path,
+            experimental_delegates=experimental_delegates
+        )
+        self.interpreter.allocate_tensors()
 
-        # --- Configurações do Sistema ---
-        self.colors = {'OK': (0, 255, 0), 'NOK': (0, 0, 255), 'PEDRA': (255, 0, 0)}
-        self.class_priority = {'PEDRA': 3, 'NOK': 2, 'OK': 1}
-        self.class_values = {'OK': 0, 'NOK': 1, 'PEDRA': 2}
-        self.window_name = 'Vision System'
-        self.plc = Plc()
-        self.camera = None
-        self.converter = None
+        # Obtém detalhes da entrada e saída do modelo
+        self.input_details = self.interpreter.get_input_details()
+        self.output_details = self.interpreter.get_output_details()
 
-        # --- Inicialização do Modelo TFLite ---
-        self.interpreter = None
-        self.input_details = None
-        self.output_details = None
-        self.input_height = 0
-        self.input_width = 0
-        self.labels = []
-        self._initialize_model(model_path, labels_path)
+        # Verifica se o tipo de entrada é INT8 (esperado para modelos quantizados)
+        if self.input_details[0]['dtype'] == np.int8:
+            print("Modelo INT8 detectado. A quantização está correta para a NPU.")
+        else:
+            print("AVISO: Modelo não parece ser INT8. A performance na NPU pode não ser a ideal.")
 
-    def _initialize_model(self, model, labels_path):
-        """Carrega o modelo TFLite e os metadados."""
-        try:
-            # Carrega os nomes das classes (labels)
-            if(USE_HW_ACCELERATED_INFERENCE):
-                delegates = [tflite.load_delegate("/usr/lib/libvx_delegate.so")]
-            else:
-                delegates = []
-            with open(labels_path, 'r') as f:
-                self.labels = [line.strip() for line in f.readlines()]
-            try:
-                self.interpreter = tflite.Interpreter(
-                    model_path=model,
-                    experimental_delegates=delegates
-                )
-            except (ValueError, OSError) as e:
-                logger.warning(f"Não foi possível carregar o delegate da NPU: {e}")
-                logger.warning("A inferência será executada na CPU (fallback).")
-                # Se falhar, carrega o interpretador sem o delegate (usando a CPU)
-                self.interpreter = tflite.Interpreter(model_path=model)
+    def preprocess_frame(self, frame):
+        """Redimensiona e prepara o frame da câmera para o modelo."""
+        # A imagem de entrada para o modelo é [1, 320, 320, 3]
+        image_resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
+        input_data = np.expand_dims(image_resized, axis=0)
+        return input_data
+
+    def detect(self, frame):
+        """Executa a detecção de objetos em um único frame."""
+        # O modelo YOLOv8 TFLite retorna uma única saída com formato [1, num_classes + 4, num_boxes]
+        # Exemplo: [1, 5, 8400] se tiver 1 classe. Onde 4 são as coordenadas (cx, cy, w, h)
+        # e o restante são as confianças das classes.
+
+        input_data = self.preprocess_frame(frame)
+        
+        # Define o tensor de entrada e executa a inferência
+        self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
+        self.interpreter.invoke()
+
+        # Obtém o resultado
+        output_data = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+        
+        # Transpõe a matriz de saída para [8400, 5] para facilitar o processamento
+        output_data = output_data.T 
+
+        boxes = []
+        scores = []
+        class_ids = []
+
+        # Processa cada detecção potencial
+        for detection in output_data:
+            confidence = detection[4:].max() # A confiança é o maior score entre as classes
+            if confidence > CONFIDENCE_THRESHOLD:
+                class_id = detection[4:].argmax()
                 
-            self.interpreter.allocate_tensors()
+                # Converte as coordenadas do centro (cx,cy,w,h) para (x1,y1,x2,y2)
+                cx, cy, w, h = detection[:4]
+                x1 = int((cx - w / 2))
+                y1 = int((cy - h / 2))
+                x2 = int((cx + w / 2))
+                y2 = int((cy + h / 2))
 
-            # Obtém detalhes de entrada e saída
-            self.input_details = self.interpreter.get_input_details()[0]
-            self.output_details = self.interpreter.get_output_details()[0]
+                boxes.append([x1, y1, x2, y2])
+                scores.append(float(confidence))
+                class_ids.append(int(class_id))
+        
+        # Aplica Supressão Não-Máxima (NMS) para remover caixas sobrepostas
+        # A saída do YOLO já é boa, mas o NMS do OpenCV pode refinar
+        frame_height, frame_width, _ = frame.shape
+        scaled_boxes = self.scale_boxes(boxes, (frame_width, frame_height))
+
+        indices = cv2.dnn.NMSBoxes(scaled_boxes, scores, CONFIDENCE_THRESHOLD, 0.4)
+        
+        final_detections = []
+        if len(indices) > 0:
+            for i in indices.flatten():
+                final_detections.append({
+                    "box": scaled_boxes[i],
+                    "label": self.labels[class_ids[i]],
+                    "confidence": scores[i]
+                })
+
+        return final_detections
+
+    def scale_boxes(self, boxes, frame_shape):
+        """Converte as coordenadas da caixa do tamanho da entrada do modelo para o tamanho original do frame."""
+        frame_w, frame_h = frame_shape
+        scale_x = frame_w / INPUT_WIDTH
+        scale_y = frame_h / INPUT_HEIGHT
+        
+        scaled_boxes = []
+        for box in boxes:
+            x1, y1, x2, y2 = box
+            scaled_boxes.append([int(x1 * scale_x), int(y1 * scale_y), int(x2 * scale_x), int(y2 * scale_y)])
+        return scaled_boxes
+
+    def draw_detections(self, frame, detections):
+        """Desenha as caixas e labels no frame."""
+        for det in detections:
+            box = det['box']
+            label = det['label']
+            confidence = det['confidence']
             
-            # Obtém o tamanho de entrada esperado pelo modelo (ex: 640x640)
-            self.input_height = self.input_details['shape'][1]
-            self.input_width = self.input_details['shape'][2]
+            x1, y1, x2, y2 = box
             
-            logger.info(f"Modelo TFLite '{model}' carregado com sucesso.")
-            logger.info(f"Tamanho de entrada do modelo: {self.input_width}x{self.input_height}")
-
-        except Exception as e:
-            logger.error(f"Erro ao inicializar o modelo TFLite: {e}")
-            self.interpreter = None # Garante que o sistema não continue se o modelo falhar
-
-    def init_camera(self) -> bool:
-        """Inicializa a câmera Pylon."""
-        try:
-            self.camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-            self.camera.Open()
-            logging.info("Câmera encontrada e aberta com sucesso.")
-
-            self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-            self.converter = pylon.ImageFormatConverter()
-            self.converter.OutputPixelFormat = pylon.PixelType_BGR8packed
-            self.converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
-            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-            return True
-        except Exception as e:
-            logger.error(f"Erro ao inicializar camera: {e}")
-            logger.error("Nenhuma câmera Pylon encontrada. Verifique a conexão USB e as permissões do Docker.")
-            return False
-
-    def process_frame(self) -> None:
-        """Captura, processa o frame, exibe os resultados e escreve no PLC."""
-        if not self.interpreter:
-            logger.error("Modelo não inicializado. Saindo do processamento.")
-            return
+            # Desenha a caixa
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             
-        if not self.plc.init_plc():
-            logger.error("Falha ao inicializar o PLC")
-
-        while self.camera.IsGrabbing():
-            try:
-                grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-                if not grab_result.GrabSucceeded():
-                    logger.warning('Falha ao capturar frame')
-                    continue
-
-                # Converte o frame da câmera para um formato que o OpenCV entende (BGR)
-                image = self.converter.Convert(grab_result)
-                frame_original = image.GetArray()
-                grab_result.Release()
-                
-                frame_h, frame_w, _ = frame_original.shape
-
-                # --- 1. Pré-processamento do Frame ---
-                # Redimensiona para o tamanho de entrada do modelo
-                img_resized = cv2.resize(frame_original, (self.input_width, self.input_height))
-                # Converte para RGB, normaliza (0-1) e adiciona dimensão de batch
-                input_data = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                input_data = np.expand_dims(input_data, axis=0).astype(np.float32) / 255.0
-
-                # --- 2. Executar Inferência ---
-                self.interpreter.set_tensor(self.input_details['index'], input_data)
-                self.interpreter.invoke()
-                output = self.interpreter.get_tensor(self.output_details['index'])
-                # Transpõe a saída para o formato [detecções, dados], ex: (8400, 84)
-                output_transposed = output.transpose(0, 2, 1)[0]
-
-                # --- 3. Pós-processamento ---
-                boxes, scores, class_ids = [], [], []
-                for row in output_transposed:
-                    confidence = np.max(row[4:])
-                    if confidence > self.CONFIDENCE_THRESHOLD:
-                        class_id = np.argmax(row[4:])
-                        scores.append(confidence)
-                        class_ids.append(class_id)
-                        
-                        # Converte coordenadas (center_x, center_y, width, height) para (x1, y1, x2, y2)
-                        cx, cy, w, h = row[:4]
-                        x1 = int((cx - w / 2) * frame_w)
-                        y1 = int((cy - h / 2) * frame_h)
-                        x2 = int((cx + w / 2) * frame_w)
-                        y2 = int((cy + h / 2) * frame_h)
-                        boxes.append([x1, y1, x2, y2])
-                
-                # --- 4. Aplicar NMS ---
-                indices_finais = supressao_nao_maxima(np.array(boxes), np.array(scores), self.IOU_THRESHOLD)
-
-                # --- 5. Processar e Desenhar Resultados Finais ---
-                highest_priority_class = None
-                highest_priority = 0
-                frame_desenhado = frame_original.copy()
-
-                for i in indices_finais:
-                    box = boxes[i]
-                    x1, y1, x2, y2 = box
-                    label = self.labels[class_ids[i]]
-                    score = scores[i]
-                    color = self.colors.get(label, (255, 255, 255))
-                    
-                    # Desenha a caixa e o rótulo
-                    cv2.rectangle(frame_desenhado, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(frame_desenhado, f'{label}: {score:.2f}', (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-
-                    # Rastreia a classe de maior prioridade para o PLC
-                    priority = self.class_priority.get(label, 0)
-                    if priority > highest_priority:
-                        highest_priority = priority
-                        highest_priority_class = label
-
-                # Escreve a classe de maior prioridade no PLC
-                if highest_priority_class:
-                    try:
-                        plc_data = self.class_values[highest_priority_class]
-                        self.plc.write_db(plc_data)
-                        logger.info(f"Escreveu a classe {highest_priority_class} (valor {plc_data}) para o PLC")
-                    except Exception as e:
-                        logger.error(f"Falha ao escrever no PLC: {e}")
-
-                # Exibe o frame final
-                cv2.imshow(self.window_name, frame_desenhado)
-                cv2.moveWindow(self.window_name, 0, 0)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-
-            except Exception as e:
-                logger.error(f"Erro no loop de processamento: {e}")
-                continue
-
-    def cleanup(self) -> None:
-        """Libera os recursos da câmera, PLC e OpenCV."""
-        try:
-            if self.camera and self.camera.IsGrabbing():
-                self.camera.StopGrabbing()
-            if self.camera and self.camera.IsOpen():
-                self.camera.Close()
-            cv2.destroyAllWindows()
-            logger.info("Recursos liberados com sucesso")
-        except Exception as e:
-            logger.error(f"Erro durante a limpeza: {e}")
-
-    def __enter__(self):
-        self.init_camera()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.cleanup()
+            # Prepara o texto
+            text = f"{label}: {confidence:.2f}"
+            
+            # Desenha o fundo do texto
+            (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.rectangle(frame, (x1, y1 - text_height - 10), (x1 + text_width, y1), (0, 255, 0), -1)
+            
+            # Desenha o texto
+            cv2.putText(frame, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+        return frame
 
 def main():
     """Função principal para rodar o sistema de visão."""
-    with VisionSystem() as vision_system:
-        if vision_system.camera and vision_system.camera.IsOpen():
-            vision_system.process_frame()
-        else:
-            print("Saindo do programa pois a câmera não pôde ser inicializada.")
+    # Inicializa o detector
+    detector = ObjectDetector(MODEL_PATH, LABELS_PATH)
 
-if __name__ == "__main__":
+    # Abre a câmera
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    if not cap.isOpened():
+        print(f"Erro: Não foi possível abrir a câmera no índice {CAMERA_INDEX}.")
+        return
+
+    print("Câmera aberta. Pressione 'q' para sair.")
+
+    while True:
+        start_time = time.time() # Início da contagem de tempo
+        
+        # Captura o frame
+        ret, frame = cap.read()
+        if not ret:
+            print("Erro ao capturar frame.")
+            break
+
+        # Detecta os objetos
+        detections = detector.detect(frame)
+        
+        # Desenha as detecções no frame
+        output_frame = detector.draw_detections(frame, detections)
+        
+        # Calcula e mostra o FPS
+        end_time = time.time()
+        fps = 1 / (end_time - start_time)
+        cv2.putText(output_frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+        # Mostra o resultado
+        cv2.imshow("Detector de Objetos - Toradex iMX8MP", output_frame)
+
+        # Verifica se 'q' foi pressionado para sair
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+            
+    # Libera os recursos
+    cap.release()
+    cv2.destroyAllWindows()
+    print("Sistema encerrado.")
+
+if __name__ == '__main__':
     main()
