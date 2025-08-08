@@ -4,6 +4,7 @@ import numpy as np
 import tflite_runtime.interpreter as tflite
 from plc import Plc # Supondo que seu arquivo plc.py está acessível
 
+# --- Configuração do Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,15 @@ def supressao_nao_maxima(boxes, scores, iou_threshold):
     return keep
 
 class VisionSystem:
-    def __init__(self, model_path: str = 'data/models/best_int8.tflite', labels_path: str = 'data/models/labels.txt'):
+    def __init__(self, model_path: str, labels_path: str, delegate_path: str = None):
+        """
+        Inicializa o sistema de visão.
+
+        Args:
+            model_path (str): Caminho para o modelo .tflite.
+            labels_path (str): Caminho para o arquivo de labels.
+            delegate_path (str, optional): Caminho para a biblioteca do delegate da NPU.
+        """
         # --- Configurações de Detecção ---
         self.CONFIDENCE_THRESHOLD = 0.5
         self.IOU_THRESHOLD = 0.45
@@ -55,17 +64,30 @@ class VisionSystem:
         self.input_height = 0
         self.input_width = 0
         self.labels = []
-        self._initialize_model(model_path, labels_path)
+        self._initialize_model(model_path, labels_path, delegate_path)
 
-    def _initialize_model(self, model_path, labels_path):
-        """Carrega o modelo TFLite e os metadados."""
+    def _initialize_model(self, model_path, labels_path, delegate_path):
+        """Carrega o modelo TFLite, os metadados e o delegate da NPU."""
         try:
             # Carrega os nomes das classes (labels)
             with open(labels_path, 'r') as f:
                 self.labels = [line.strip() for line in f.readlines()]
 
-            # Carrega o interpretador TFLite
-            self.interpreter = tflite.Interpreter(model_path=model_path)
+            # Carrega o delegate da NPU, se o caminho for fornecido
+            experimental_delegates = []
+            if delegate_path:
+                try:
+                    experimental_delegates.append(tflite.load_delegate(delegate_path))
+                    logger.info(f"Delegate da NPU em '{delegate_path}' carregado com sucesso.")
+                except Exception as e:
+                    logger.error(f"Erro ao carregar o delegate da NPU: {e}")
+                    logger.warning("Executando o modelo na CPU.")
+            
+            # Carrega o interpretador TFLite com o delegate (se houver)
+            self.interpreter = tflite.Interpreter(
+                model_path=model_path,
+                experimental_delegates=experimental_delegates
+            )
             self.interpreter.allocate_tensors()
 
             # Obtém detalhes de entrada e saída
@@ -80,7 +102,7 @@ class VisionSystem:
             logger.info(f"Tamanho de entrada do modelo: {self.input_width}x{self.input_height}")
 
         except Exception as e:
-            logger.error(f"Erro ao inicializar o modelo TFLite: {e}")
+            logger.error(f"Erro fatal ao inicializar o modelo TFLite: {e}")
             self.interpreter = None # Garante que o sistema não continue se o modelo falhar
 
     def init_camera(self) -> bool:
@@ -90,7 +112,7 @@ class VisionSystem:
             if not self.camera.isOpened():
                 raise IOError(f"Não foi possível abrir a câmera no índice {self.CAMERA_INDEX}")
 
-            logging.info(f"Câmera no índice {self.CAMERA_INDEX} aberta com sucesso.")
+            logger.info(f"Câmera no índice {self.CAMERA_INDEX} aberta com sucesso.")
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             return True
@@ -111,26 +133,27 @@ class VisionSystem:
 
         while self.camera.isOpened():
             try:
-                # Captura o frame da câmera com OpenCV
                 ret, frame_original = self.camera.read()
-                # if not ret:
-                #     logger.warning('Falha ao capturar frame. Fim do stream?')
-                #     break
+                if not ret:
+                    logger.warning('Falha ao capturar frame. Fim do stream?')
+                    break
                 
                 frame_h, frame_w, _ = frame_original.shape
 
                 # --- 1. Pré-processamento do Frame ---
-                # Redimensiona para o tamanho de entrada do modelo
                 img_resized = cv2.resize(frame_original, (self.input_width, self.input_height))
-                # Converte para RGB, normaliza (0-1) e adiciona dimensão de batch
                 input_data = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                input_data = np.expand_dims(input_data, axis=0).astype(np.float32) / 255.0
+                
+                # Normaliza e expande a dimensão de acordo com o tipo de dado do modelo
+                if self.input_details['dtype'] == np.uint8: # Para modelos quantizados (INT8)
+                    input_data = np.expand_dims(input_data, axis=0)
+                else: # Para modelos float
+                    input_data = np.expand_dims(input_data, axis=0).astype(np.float32) / 255.0
 
                 # --- 2. Executar Inferência ---
                 self.interpreter.set_tensor(self.input_details['index'], input_data)
                 self.interpreter.invoke()
                 output = self.interpreter.get_tensor(self.output_details['index'])
-                # Transpõe a saída para o formato [detecções, dados], ex: (8400, 84)
                 output_transposed = output.transpose(0, 2, 1)[0]
 
                 # --- 3. Pós-processamento ---
@@ -142,7 +165,6 @@ class VisionSystem:
                         scores.append(confidence)
                         class_ids.append(class_id)
                         
-                        # Converte coordenadas (center_x, center_y, width, height) para (x1, y1, x2, y2)
                         cx, cy, w, h = row[:4]
                         x1 = int((cx - w / 2) * frame_w)
                         y1 = int((cy - h / 2) * frame_h)
@@ -165,12 +187,10 @@ class VisionSystem:
                     score = scores[i]
                     color = self.colors.get(label, (255, 255, 255))
                     
-                    # Desenha a caixa e o rótulo
                     cv2.rectangle(frame_desenhado, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(frame_desenhado, f'{label}: {score:.2f}', (x1, y1 - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-                    # Rastreia a classe de maior prioridade para o PLC
                     priority = self.class_priority.get(label, 0)
                     if priority > highest_priority:
                         highest_priority = priority
@@ -215,8 +235,16 @@ class VisionSystem:
 
 def main():
     """Função principal para rodar o sistema de visão."""
-    with VisionSystem() as vision_system:
-        # Verifica se a câmera foi inicializada com sucesso antes de processar
+    
+    # Caminho padrão para o delegate da NPU nos sistemas Torizon com i.MX 8M Plus
+    # Deixe como None se não quiser usar a NPU
+    NPU_DELEGATE_PATH = "/usr/lib/libethosu_delegate.so"
+
+    with VisionSystem(
+        model_path='data/models/best_int8.tflite',
+        labels_path='data/models/labels.txt',
+        delegate_path=NPU_DELEGATE_PATH
+    ) as vision_system:
         if vision_system.camera and vision_system.camera.isOpened():
             vision_system.process_frame()
         else:

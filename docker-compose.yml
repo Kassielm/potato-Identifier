@@ -17,7 +17,17 @@ services:
       - "/dev/galcore:/dev/galcore"
     environment:
       - "DISPLAY=:0"
-      - LD_LIBRARY_PATH=/opt/pylon/lib
+      - CAPTURE_DEVICE=/dev/video2
+      - USE_HW_ACCELERATED_INFERENCE=1
+      - USE_GPU_INFERENCE=0
+      - ACCEPT_FSL_EULA=1
     volumes:
       - /dev:/dev
-      - /opt/pylon_drivers:/opt/pylon
+      - /tmp:/tmp
+      - /run/udev/:/run/udev/
+    device_cgroup_rules:
+      - 'c 4:* rmw'
+      - 'c 13:* rmw'
+      - 'c 199:* rmw'
+      - 'c 226:* rmw'
+      - 'c 81:* rmw'
