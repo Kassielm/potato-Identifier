@@ -8,7 +8,7 @@
     "torizon_login": "torizon",
     "torizon_ip": "192.168.100.174",
     "torizon_ssh_port": "22",
-    "host_ip": "192.168.100.199",
+    "host_ip": "192.168.100.202",
     "torizon_workspace": "${workspaceFolder}",
     "torizon_gpu": "-imx8",
     "torizon_arch": "aarch64",

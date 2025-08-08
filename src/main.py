@@ -2,7 +2,6 @@ import cv2
 import logging
 import numpy as np
 import tflite_runtime.interpreter as tflite
-from pypylon import pylon
 from plc import Plc # Supondo que seu arquivo plc.py está acessível
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -35,19 +34,19 @@ def supressao_nao_maxima(boxes, scores, iou_threshold):
     return keep
 
 class VisionSystem:
-    def __init__(self, model_path: str = 'data/models/best_float32.tflite', labels_path: str = 'data/models/labels.txt'):
+    def __init__(self, model_path: str = 'data/models/best_int8.tflite', labels_path: str = 'data/models/labels.txt'):
         # --- Configurações de Detecção ---
         self.CONFIDENCE_THRESHOLD = 0.5
         self.IOU_THRESHOLD = 0.45
 
         # --- Configurações do Sistema ---
+        self.CAMERA_INDEX = 2
         self.colors = {'OK': (0, 255, 0), 'NOK': (0, 0, 255), 'PEDRA': (255, 0, 0)}
         self.class_priority = {'PEDRA': 3, 'NOK': 2, 'OK': 1}
         self.class_values = {'OK': 0, 'NOK': 1, 'PEDRA': 2}
         self.window_name = 'Vision System'
         self.plc = Plc()
-        self.camera = None
-        self.converter = None
+        self.camera = None # Agora será um objeto cv2.VideoCapture
 
         # --- Inicialização do Modelo TFLite ---
         self.interpreter = None
@@ -85,22 +84,20 @@ class VisionSystem:
             self.interpreter = None # Garante que o sistema não continue se o modelo falhar
 
     def init_camera(self) -> bool:
-        """Inicializa a câmera Pylon."""
+        """Inicializa a câmera USB usando OpenCV."""
         try:
-            self.camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-            self.camera.Open()
-            logging.info("Câmera encontrada e aberta com sucesso.")
+            self.camera = cv2.VideoCapture(self.CAMERA_INDEX)
+            if not self.camera.isOpened():
+                raise IOError(f"Não foi possível abrir a câmera no índice {self.CAMERA_INDEX}")
 
-            self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-            self.converter = pylon.ImageFormatConverter()
-            self.converter.OutputPixelFormat = pylon.PixelType_BGR8packed
-            self.converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+            logging.info(f"Câmera no índice {self.CAMERA_INDEX} aberta com sucesso.")
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             return True
         except Exception as e:
             logger.error(f"Erro ao inicializar camera: {e}")
-            logger.error("Nenhuma câmera Pylon encontrada. Verifique a conexão USB e as permissões do Docker.")
+            logger.error("Verifique a conexão da câmera e as permissões do dispositivo.")
+            self.camera = None
             return False
 
     def process_frame(self) -> None:
@@ -112,17 +109,13 @@ class VisionSystem:
         if not self.plc.init_plc():
             logger.error("Falha ao inicializar o PLC")
 
-        while self.camera.IsGrabbing():
+        while self.camera.isOpened():
             try:
-                grab_result = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-                if not grab_result.GrabSucceeded():
-                    logger.warning('Falha ao capturar frame')
-                    continue
-
-                # Converte o frame da câmera para um formato que o OpenCV entende (BGR)
-                image = self.converter.Convert(grab_result)
-                frame_original = image.GetArray()
-                grab_result.Release()
+                # Captura o frame da câmera com OpenCV
+                ret, frame_original = self.camera.read()
+                # if not ret:
+                #     logger.warning('Falha ao capturar frame. Fim do stream?')
+                #     break
                 
                 frame_h, frame_w, _ = frame_original.shape
 
@@ -205,12 +198,11 @@ class VisionSystem:
     def cleanup(self) -> None:
         """Libera os recursos da câmera, PLC e OpenCV."""
         try:
-            if self.camera and self.camera.IsGrabbing():
-                self.camera.StopGrabbing()
-            if self.camera and self.camera.IsOpen():
-                self.camera.Close()
+            if self.camera and self.camera.isOpened():
+                self.camera.release()
+                logger.info("Câmera liberada com sucesso.")
             cv2.destroyAllWindows()
-            logger.info("Recursos liberados com sucesso")
+            logger.info("Recursos de janela liberados com sucesso")
         except Exception as e:
             logger.error(f"Erro durante a limpeza: {e}")
 
@@ -224,7 +216,8 @@ class VisionSystem:
 def main():
     """Função principal para rodar o sistema de visão."""
     with VisionSystem() as vision_system:
-        if vision_system.camera and vision_system.camera.IsOpen():
+        # Verifica se a câmera foi inicializada com sucesso antes de processar
+        if vision_system.camera and vision_system.camera.isOpened():
             vision_system.process_frame()
         else:
             print("Saindo do programa pois a câmera não pôde ser inicializada.")

@@ -12,7 +12,9 @@ services:
       - "44"
       - "20"
     devices:
-      - "/dev:/dev"
+      - "/dev/video3:/dev/video3"
+      - "/dev/video2:/dev/video2"
+      - "/dev/galcore:/dev/galcore"
     environment:
       - "DISPLAY=:0"
       - LD_LIBRARY_PATH=/opt/pylon/lib
