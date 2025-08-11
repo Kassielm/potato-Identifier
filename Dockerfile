@@ -1,49 +1,79 @@
 # ARGUMENTS --------------------------------------------------------------------
-##
-# Board architecture
-##
-ARG IMAGE_ARCH=arm64
+ARG IMAGE_ARCH=
 
 ##
 # Base container version
 ##
-ARG BASE_VERSION=4
+ARG BASE_VERSION=3.2.1-bookworm
 
-##
-# Directory of the application inside container
-##
 ARG APP_ROOT=
 
 FROM --platform=linux/${IMAGE_ARCH} \
-    torizon/debian:${BASE_VERSION} AS deploy
+    torizon/debian:${BASE_VERSION} AS Build
 
 ARG IMAGE_ARCH
 ARG APP_ROOT
+ARG BASE_VERSION
 
-# your regular RUN statements here
-# Install required packages
-RUN apt-get -q -y update && \
-    apt-get -q -y install \
-    python3-minimal \
+RUN apt-get -y update && apt-get install -y \
+    python3 \
+    python3-dev \
+    python3-numpy \
+    python3-pybind11 \
     python3-pip \
-    python3-venv \
-    libgl1 \
-    libglib2.0-0 \
-    libgl1-mesa-glx \
-    libegl1 \
-    qtwayland5 \
-    libxext6 \
-    libxrender1 \
-    libxcb-xinerama0 \
-    libxcb-cursor0 \
+    python3-setuptools \
+    python3-wheel \
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     # __torizon_packages_prod_start__
     # __torizon_packages_prod_end__
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
-    && apt-get clean && apt-get autoremove && \
-    rm -rf /var/lib/apt/lists/* && \
-    ldconfig && \
-    usermod -aG video root
+    && apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
+
+# 1. Instala todas as ferramentas de compilação
+## Install build tools
+RUN apt-get -y update && apt-get install -y \
+    cmake \
+    build-essential \
+    gcc \
+    g++ \
+    git \
+    wget \
+    unzip \
+    patchelf \
+    autoconf \
+    automake \
+    libtool \
+    curl \
+    gfortran \
+    && apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
+
+## Install dependencies
+RUN apt-get -y update && apt-get install -y \
+    zlib1g-dev \
+    libssl-dev \
+    imx-gpu-viv-wayland-dev \
+    openssl \
+    libffi-dev \
+    libjpeg-dev \
+    && apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
+
+# 2. Copia e executa os scripts de compilação
+WORKDIR /build
+COPY recipes /build
+# Damos permissão e executamos todos os scripts que compilam e instalam as libs
+RUN chmod +x *.sh && \
+    ./nn-imx_1.3.0.sh && \
+    ./tim-vx.sh && \
+    ./tflite-vx-delegate.sh
+
+# STAGE 2: FINAL RUNTIME ENVIRONMENT -------------------------------------------
+# Agora, criamos a imagem final, que será leve e limpa.
+FROM --platform=linux/${IMAGE_ARCH} torizon/debian:${BASE_VERSION}
+
+RUN apt-get -y update && apt-get install -y \
+    python3-venv \
+    && apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
+
 
 # Create virtualenv
 RUN python3 -m venv ${APP_ROOT}/.venv --system-site-packages
@@ -51,17 +81,42 @@ RUN python3 -m venv ${APP_ROOT}/.venv --system-site-packages
 # Install pip packages on venv
 COPY requirements-release.txt /requirements-release.txt
 RUN . ${APP_ROOT}/.venv/bin/activate && \
-    pip3 install --upgrade pip && pip3 install -r requirements-release.txt && \
+    pip3 install --upgrade pip && pip3 install --break-system-packages -r requirements-release.txt && \
     rm requirements-release.txt
 
-# Copy the application source code in the workspace to the $APP_ROOT directory
-# path inside the container, where $APP_ROOT is the torizon_app_root
-# configuration defined in settings.json
-COPY ./src ${APP_ROOT}/src
-COPY data/ ${APP_ROOT}/data/
+## Install TF Lite ##
+COPY --from=Build /build /build
+RUN cp -r /build/* /
+RUN . ${APP_ROOT}/.venv/bin/activate && \
+    pip3 install --break-system-packages --no-cache-dir /tflite_runtime-*.whl && rm -rf *.whl
+
+RUN apt-get -y update && apt-get install -y \
+    libovxlib \
+    && apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
+
+## Install application dependencies
+RUN apt-get -y update && apt-get install -y \
+    wget \
+    unzip \
+    imx-gpu-viv-wayland-dev \
+# DO NOT REMOVE THIS LABEL: this is used for VS Code automation
+    # __torizon_packages_prod_start__
+    # __torizon_packages_prod_end__
+# DO NOT REMOVE THIS LABEL: this is used for VS Code automation
+  && apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
+
+# 3. Atualiza o sistema para reconhecer as novas bibliotecas
+RUN ldconfig
+
+# Copy the model
+COPY --chmod=0777 data/models/labels.txt ${APP_ROOT}/labels.txt
+COPY --chmod=0777 data/models/best_int8.tflite ${APP_ROOT}/best_int8.tflite
+
+# copy the source code
+COPY /src ${APP_ROOT}/src
 
 WORKDIR ${APP_ROOT}
+
 ENV APP_ROOT=${APP_ROOT}
 # Activate and run the code
-
-CMD . ${APP_ROOT}/.venv/bin/activate && python3 -u src/main.py --no-sandbox
+CMD . ${APP_ROOT}/.venv/bin/activate && python3 src/main.py --no-sandbox
