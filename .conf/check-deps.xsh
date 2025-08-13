@@ -113,10 +113,10 @@ else:
 
     if _installConfirm == 'y':
         if len(_packages_to_install) > 0:
-            sudo apt-get update
+            sudo apt update
 
             for package in _packages_to_install:
-                sudo apt-get install -y @(package)
+                sudo apt install -y @(package)
 
                 if last_return_code() != 0:
                     Error_Out(

@@ -1,6 +1,6 @@
-debugpy
 numpy<2.0
 opencv-python==4.8.1.78
 tensorflow>=2.15.0
 Pillow>=10.0.0
 python-snap7==2.0.2
+pypylon

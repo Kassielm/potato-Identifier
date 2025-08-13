@@ -8,7 +8,7 @@
     "torizon_login": "torizon",
     "torizon_ip": "192.168.100.174",
     "torizon_ssh_port": "22",
-    "host_ip": "192.168.100.146",
+    "host_ip": "192.168.203.133",
     "torizon_workspace": "${workspaceFolder}",
     "torizon_gpu": "-imx8",
     "torizon_arch": "aarch64",
@@ -23,13 +23,13 @@
     "docker_registry": "registry-1.docker.io",
     "docker_login": "kassiell",
     "docker_password": "secret",
+    "tcb.clientSecret": "secret",
+    "tcb.fleetName": "aa",
     "containers.environment": {
         "DOCKER_HOST": "tcp://192.168.100.174:2375",
         "DEBUG_SSH_PORT": "6502",
         "DEBUG_PORT1": "6512",
         "DEBUG_PORT2": "",
         "DEBUG_PORT3": ""
-    },
-    "tcb.clientSecret": "secret",
-    "tcb.fleetName": "aa"
+    }
 }

@@ -1,0 +1,49 @@
+# Dockerfile para desenvolvimento local (amd64)
+FROM python:3.11-slim
+
+ARG APP_ROOT=/app
+
+# Make sure we don't get notifications we can't answer during building.
+ENV DEBIAN_FRONTEND="noninteractive"
+
+# Configure apt to handle repository issues
+RUN echo 'APT::Get::Assume-Yes "true";' >> /etc/apt/apt.conf.d/90assumeyes && \
+    echo 'APT::Get::Fix-Broken "true";' >> /etc/apt/apt.conf.d/90fixbroken && \
+    echo 'APT::Install-Recommends "false";' >> /etc/apt/apt.conf.d/90norecommends
+
+# Update package lists with error handling
+RUN apt update --fix-missing -q -y || apt update -q -y
+
+# Install minimal packages for OpenCV
+RUN apt install -q -y \
+    ca-certificates \
+    apt-transport-https \
+    && apt install -q -y \
+    python3-tk \
+    libglib2.0-0 \
+    libgtk-3-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    ffmpeg \
+    && apt clean && apt autoremove && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create working directory
+WORKDIR ${APP_ROOT}
+
+# Install pip packages
+COPY requirements-local.txt /requirements-local.txt
+RUN pip install --upgrade pip && pip install -r /requirements-local.txt && \
+    rm /requirements-local.txt
+
+# Copy the application source code
+COPY ./src ${APP_ROOT}/src
+COPY data/ ${APP_ROOT}/data/
+
+ENV APP_ROOT=${APP_ROOT}
+ENV DISPLAY=:0
+
+# Run the application
+CMD ["python", "-u", "src/main.py"]
