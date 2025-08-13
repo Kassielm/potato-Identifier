@@ -3,12 +3,14 @@ services:
     container_name: potato-identifier
     devices:
     - /dev:/dev
+    - /dev/dri:/dev/dri
+    - /dev/galcore:/dev/galcore
     environment:
     - DISPLAY=:0
     - QT_PLUGIN_PATH=/usr/lib/aarch64-linux-gnu/qt5/plugins
     - WAYLAND_DISPLAY=wayland-1
     - XDG_RUNTIME_DIR=/run/user/1000
-    - LD_LIBRARY_PATH=/opt/pylon/lib
+    - LD_LIBRARY_PATH=/opt/pylon/lib:/usr/lib
     - QT_DEBUG_PLUGINS=1
     image: kassiell/potato-identifier
     network_mode: host
@@ -18,3 +20,5 @@ services:
     - /run/user/1000:/run/user/1000:rw
     - /dev:/dev
     - /opt/pylon_drivers:/opt/pylon
+    - /sys/bus/pci:/sys/bus/pci:ro
+    - /sys/devices:/sys/devices:ro

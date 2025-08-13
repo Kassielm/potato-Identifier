@@ -2,7 +2,7 @@
 ##
 # Board architecture
 ##
-ARG IMAGE_ARCH=arm64
+ARG IMAGE_ARCH=amd64
 
 ##
 # Base container version
@@ -20,8 +20,7 @@ FROM --platform=linux/${IMAGE_ARCH} \
 ARG IMAGE_ARCH
 ARG APP_ROOT
 
-# your regular RUN statements here
-# Install required packages
+# Install required packages for local development
 RUN apt-get -q -y update && \
     apt-get -q -y install \
     python3-minimal \
@@ -36,29 +35,23 @@ RUN apt-get -q -y update && \
     lsb-release \
     libusb-1.0-0 \
     udev \
+    xvfb \
+    x11vnc \
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
-    # __torizon_packages_prod_start__
-    # __torizon_packages_prod_end__
+    # __torizon_packages_dev_start__
+    # __torizon_packages_dev_end__
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     && apt-get clean && apt-get autoremove && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Edge TPU runtime for NPU support on IMX8MP
-RUN echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" | tee /etc/apt/sources.list.d/coral-edgetpu.list && \
-    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - && \
-    apt-get update && \
-    apt-get install -y libedgetpu1-std && \
-    apt-get clean && apt-get autoremove && \
     rm -rf /var/lib/apt/lists/*
 
 # Create virtualenv
 RUN python3 -m venv ${APP_ROOT}/.venv --system-site-packages
 
 # Install pip packages on venv
-COPY requirements-release.txt /requirements-release.txt
+COPY requirements-local.txt /requirements-local.txt
 RUN . ${APP_ROOT}/.venv/bin/activate && \
-    pip3 install --upgrade pip && pip3 install -r requirements-release.txt && \
-    rm requirements-release.txt
+    pip3 install --upgrade pip && pip3 install -r requirements-local.txt && \
+    rm requirements-local.txt
 
 # Copy the application source code in the workspace to the $APP_ROOT directory
 # path inside the container, where $APP_ROOT is the torizon_app_root
@@ -68,6 +61,12 @@ COPY data/ ${APP_ROOT}/data/
 
 WORKDIR ${APP_ROOT}
 ENV APP_ROOT=${APP_ROOT}
-# Activate and run the code
+ENV DISPLAY=:99
 
+# Setup virtual display for development
+COPY docker-entrypoint-dev.sh /docker-entrypoint-dev.sh
+RUN chmod +x /docker-entrypoint-dev.sh
+
+# Activate and run the code
+ENTRYPOINT ["/docker-entrypoint-dev.sh"]
 CMD . ${APP_ROOT}/.venv/bin/activate && python3 -u src/main.py --no-sandbox

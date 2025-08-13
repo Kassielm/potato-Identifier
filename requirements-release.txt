@@ -4,4 +4,5 @@ opencv-python==4.8.1.78
 pypylon==4.2.0
 python-snap7==2.0.2
 tflite-runtime==2.14.0
-Pillow==9.5.0
+Pillow>=10.0.0
+https://github.com/google-coral/pycoral/releases/download/v2.0.0/pycoral-2.0.0-cp39-cp39-linux_aarch64.whl
