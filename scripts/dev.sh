@@ -64,14 +64,16 @@ Uso: $0 [OPÇÃO]
 OPÇÕES:
     setup           Configura ambiente local
     check           Verifica sistema
-    build           Constrói imagem Docker
+    build           Constrói imagem Docker padrão
+    build-gui       Constrói imagem Docker com interface gráfica
     run             Executa aplicação
     test            Testa sistema local
     check-npu       Verifica sistema NPU
     setup-camera    Configura câmera no WSL2
     test-camera     Testa conexão da câmera
     test-usb        Testa câmeras USB disponíveis
-    deploy          Deploy remoto na placa Torizon
+    deploy          Deploy remoto na placa Torizon (headless)
+    deploy-gui      Deploy remoto com interface gráfica
     help            Mostra esta ajuda
 
 EOF
@@ -138,6 +140,44 @@ build_image() {
     fi
     
     print_success "Imagem construída!"
+}
+
+build_gui() {
+    print_info "Construindo imagem Docker com interface gráfica..."
+    
+    print_info "Construindo para Torizon com GUI (ARM64)..."
+    docker build -f Dockerfile.gui -t kassiell/potato-identifier:gui --platform linux/arm64 .
+    
+    print_success "Imagem GUI construída para ARM64!"
+}
+
+deploy_gui() {
+    print_info "Fazendo deploy com interface gráfica na placa Torizon..."
+    
+    # Verificar se o contexto do Docker remoto está configurado
+    if ! docker context ls | grep -q "torizon"; then
+        print_warning "Contexto 'torizon' não encontrado. Configure primeiro com:"
+        echo "   docker context create torizon --docker host=ssh://torizon@<IP_DA_PLACA>"
+        return 1
+    fi
+    
+    # Construir imagem GUI primeiro
+    build_gui
+    
+    print_info "Mudando para contexto remoto..."
+    docker context use torizon
+    
+    print_info "Parando containers existentes..."
+    docker stop potato-identifier-gui 2>/dev/null || true
+    docker rm potato-identifier-gui 2>/dev/null || true
+    
+    print_info "Fazendo deploy com docker compose..."
+    # Executar docker compose na placa remota
+    docker compose -f docker-compose.gui.yml up -d
+    
+    print_success "Deploy GUI concluído!"
+    print_info "📊 Para ver logs: docker logs -f potato-identifier-gui"
+    print_info "🔙 Para voltar ao contexto local: docker context use default"
 }
 
 run_application() {
@@ -336,6 +376,9 @@ case "${1:-help}" in
     build)
         build_image
         ;;
+    build-gui)
+        build_gui
+        ;;
     run)
         run_application
         ;;
@@ -356,6 +399,9 @@ case "${1:-help}" in
         ;;
     deploy)
         deploy_remote
+        ;;
+    deploy-gui)
+        deploy_gui
         ;;
     clean)
         clean_environment

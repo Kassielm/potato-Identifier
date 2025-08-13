@@ -34,9 +34,11 @@ import os
 
 # Configuração do modo headless
 HEADLESS_MODE = os.getenv('HEADLESS', '0') == '1' or os.getenv('DISPLAY') is None
+GUI_AVAILABLE = os.getenv('GUI_AVAILABLE', '1') == '1' and not HEADLESS_MODE
+NPU_AVAILABLE = os.getenv('NPU_AVAILABLE', '0') == '1'
 
 # Importações condicionais para GUI
-if not HEADLESS_MODE:
+if GUI_AVAILABLE and not HEADLESS_MODE:
     try:
         import tkinter as tk
         from PIL import Image, ImageTk
@@ -44,6 +46,21 @@ if not HEADLESS_MODE:
         print(f"Aviso: Bibliotecas GUI não disponíveis: {e}")
         print("Executando em modo headless...")
         HEADLESS_MODE = True
+        GUI_AVAILABLE = False
+
+# Importações para NPU (se disponível)
+CORAL_AVAILABLE = False
+if NPU_AVAILABLE:
+    try:
+        from pycoral.adapters import common
+        from pycoral.utils.edgetpu import make_interpreter
+        CORAL_AVAILABLE = True
+        print("✅ Coral EdgeTPU library detectada - NPU será utilizada")
+    except ImportError as e:
+        print(f"⚠️  Coral EdgeTPU não disponível: {e}")
+        print("Usando CPU para inferência...")
+        NPU_AVAILABLE = False
+        CORAL_AVAILABLE = False
 
 # --- Lógica de Caminhos Absolutos ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -66,36 +83,70 @@ class VisionSystem:
 
         logger.info("Iniciando a inicialização do VisionSystem...")
         logger.info(f"Modo headless: {self.headless}")
+        logger.info(f"NPU disponível: {NPU_AVAILABLE}")
+        logger.info(f"GUI disponível: {GUI_AVAILABLE}")
+        
         try:
             model_path = os.path.join(base_dir, 'data', 'models', 'best_float32_edgetpu.tflite')
+            fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
             label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')
 
-            logger.info(f"Carregando modelo de: {model_path}")
-            # Verifica se o modelo EdgeTPU está disponível
-            if os.path.exists(model_path):
-                # Tenta carregar com EdgeTPU (NPU)
+            # Tentar usar NPU primeiro (se disponível)
+            if NPU_AVAILABLE and CORAL_AVAILABLE and os.path.exists(model_path):
+                logger.info("🧠 Tentando carregar modelo EdgeTPU para NPU...")
                 try:
+                    # Usar Coral EdgeTPU library
+                    self.interpreter = make_interpreter(model_path)
+                    logger.info("✅ Modelo carregado com sucesso na NPU (Coral EdgeTPU)!")
+                except Exception as e:
+                    logger.warning(f"❌ Falha ao carregar na NPU: {e}")
+                    logger.info("🔄 Carregando modelo CPU como fallback...")
+                    if os.path.exists(fallback_model):
+                        self.interpreter = tf.Interpreter(model_path=fallback_model)
+                        logger.info("✅ Modelo carregado na CPU!")
+                    else:
+                        logger.error(f"❌ Modelo fallback não encontrado: {fallback_model}")
+                        raise Exception("Nenhum modelo disponível")
+            elif NPU_AVAILABLE and not CORAL_AVAILABLE and os.path.exists(model_path):
+                logger.info("🧠 Tentando carregar modelo EdgeTPU com delegate padrão...")
+                try:
+                    # Tentar delegate EdgeTPU padrão
                     if USING_TFLITE_RUNTIME:
                         self.interpreter = tf.Interpreter(
                             model_path=model_path,
                             experimental_delegates=[tf.load_delegate('libedgetpu.so.1')]
                         )
+                        logger.info("✅ Modelo carregado com EdgeTPU delegate!")
                     else:
-                        # Para TensorFlow completo, usa abordagem diferente
-                        self.interpreter = tf.Interpreter(model_path=model_path)
-                    logger.info("Modelo carregado com EdgeTPU (NPU) delegate." if USING_TFLITE_RUNTIME else "Modelo carregado (TensorFlow Lite).")
+                        # Fallback para CPU se não for tflite_runtime
+                        logger.info("🔄 TensorFlow completo - usando CPU...")
+                        self.interpreter = tf.Interpreter(model_path=fallback_model if os.path.exists(fallback_model) else model_path)
+                        logger.info("✅ Modelo carregado na CPU!")
                 except Exception as e:
-                    logger.warning(f"Falha ao carregar EdgeTPU delegate: {e}")
-                    logger.info("Carregando modelo sem EdgeTPU delegate...")
-                    self.interpreter = tf.Interpreter(model_path=model_path)
+                    logger.warning(f"❌ Falha ao carregar EdgeTPU delegate: {e}")
+                    logger.info("🔄 Carregando modelo CPU como fallback...")
+                    if os.path.exists(fallback_model):
+                        self.interpreter = tf.Interpreter(model_path=fallback_model)
+                        logger.info("✅ Modelo carregado na CPU!")
+                    else:
+                        self.interpreter = tf.Interpreter(model_path=model_path)
+                        logger.info("✅ Modelo EdgeTPU carregado na CPU!")
             else:
-                # Fallback para modelo sem EdgeTPU
-                fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
-                logger.warning(f"Modelo EdgeTPU não encontrado. Usando fallback: {fallback_model}")
-                self.interpreter = tf.Interpreter(model_path=fallback_model)
+                # Usar CPU por padrão
+                if os.path.exists(fallback_model):
+                    logger.info("💻 Carregando modelo para CPU...")
+                    self.interpreter = tf.Interpreter(model_path=fallback_model)
+                    logger.info("✅ Modelo carregado na CPU!")
+                elif os.path.exists(model_path):
+                    logger.info("💻 Carregando modelo EdgeTPU na CPU...")
+                    self.interpreter = tf.Interpreter(model_path=model_path)
+                    logger.info("✅ Modelo EdgeTPU carregado na CPU!")
+                else:
+                    logger.error("❌ Nenhum modelo encontrado!")
+                    raise Exception("Nenhum modelo disponível")
             
             self.interpreter.allocate_tensors()
-            logger.info("Modelo TFLite carregado.")
+            logger.info("🔧 Tensores alocados com sucesso.")
 
             self.input_details = self.interpreter.get_input_details()
             self.output_details = self.interpreter.get_output_details()
@@ -103,7 +154,8 @@ class VisionSystem:
             self.input_width = self.input_details[0]['shape'][2]
 
             # Debug: informações do modelo
-            logger.info(f"Input shape: {self.input_details[0]['shape']}")
+            logger.info(f"📐 Input shape: {self.input_details[0]['shape']}")
+            logger.info(f"🔢 Número de saídas: {len(self.output_details)}")
             logger.info(f"Número de outputs: {len(self.output_details)}")
             for i, output in enumerate(self.output_details):
                 logger.info(f"Output {i}: shape={output['shape']}, dtype={output['dtype']}")
