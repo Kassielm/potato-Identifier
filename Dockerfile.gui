@@ -60,7 +60,10 @@ RUN apt-get -q -y update && \
         libgles2-mesa \
         mesa-utils \
         file \
-        binutils && \
+        binutils \
+        # Pacotes para câmera V4L2
+        v4l-utils \
+        libv4l-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # Configurar locale

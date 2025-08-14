@@ -5,9 +5,19 @@ echo "🖥️  Configurando ambiente gráfico para Toradex..."
 
 # Aguardar o Weston estar pronto
 echo "⏳ Aguardando compositor Weston..."
-while [ ! -S /tmp/wayland-0 ] && [ ! -S /tmp/1000-runtime-dir/wayland-0 ]; do
+timeout_count=0
+max_timeout=30  # Aguarda no máximo 30 segundos
+
+while [ ! -S /tmp/wayland-0 ] && [ ! -S /tmp/1000-runtime-dir/wayland-0 ] && [ $timeout_count -lt $max_timeout ]; do
     sleep 1
+    timeout_count=$((timeout_count + 1))
+    echo "⏳ Aguardando Weston... ($timeout_count/$max_timeout)"
 done
+
+if [ $timeout_count -eq $max_timeout ]; then
+    echo "⚠️  Timeout aguardando Weston compositor. Continuando sem interface gráfica..."
+    echo "📱 Aplicação executará em modo headless"
+fi
 
 # Detectar localização do socket Wayland
 if [ -S /tmp/1000-runtime-dir/wayland-0 ]; then
@@ -17,6 +27,12 @@ if [ -S /tmp/1000-runtime-dir/wayland-0 ]; then
 elif [ -S /tmp/wayland-0 ]; then
     echo "✅ Socket Wayland encontrado em /tmp/wayland-0"
     export WAYLAND_DISPLAY=wayland-0
+    export XDG_RUNTIME_DIR=/tmp
+else
+    echo "⚠️  Nenhum socket Wayland encontrado - modo headless"
+    echo "📱 Configurando para execução sem display"
+    export DISPLAY=""
+    export WAYLAND_DISPLAY=""
     export XDG_RUNTIME_DIR=/tmp
 fi
 
@@ -44,9 +60,12 @@ chmod 666 /tmp/.X11-unix/* 2>/dev/null || true
 
 # Verificar NPU
 echo "🧠 Verificando disponibilidade da NPU..."
-if [ -e /dev/vipnpu* ]; then
+if [ -e /sys/bus/platform/devices/38500000.vipsi ] || [ -e /sys/devices/platform/*vipsi* ] 2>/dev/null; then
     export NPU_AVAILABLE=1
-    echo "   ✅ NPU detectada"
+    echo "   ✅ NPU detectada (VIP)"
+elif grep -q "imx8mp" /proc/cpuinfo 2>/dev/null; then
+    export NPU_AVAILABLE=1
+    echo "   ✅ NPU detectada (i.MX8MP)"
 else
     export NPU_AVAILABLE=0
     echo "   ⚠️  NPU não detectada"
@@ -74,5 +93,20 @@ echo "   HEADLESS: $HEADLESS"
 
 echo "🚀 Iniciando aplicação Potato Identifier..."
 
-# Executar a aplicação como usuário torizon para compatibilidade
-exec su torizon -c "cd /app && python3 /app/src/main.py"
+# Ativar o ambiente virtual e executar aplicação
+cd /app
+source /opt/venv/bin/activate
+
+echo "🔍 Verificando aplicação Python..."
+python3 -c "import sys; print(f'Python: {sys.version}')"
+python3 -c "import cv2; print(f'OpenCV: {cv2.__version__}')"
+
+echo "🎯 Executando aplicação principal..."
+python3 /app/src/main.py 2>&1 | tee /tmp/app.log
+
+# Se chegou aqui, a aplicação terminou - mostrar logs e manter container vivo para debug
+echo "❌ Aplicação terminou unexpectadamente!"
+echo "📋 Últimas linhas do log:"
+tail -20 /tmp/app.log
+echo "🔄 Mantendo container vivo para debug..."
+sleep infinity

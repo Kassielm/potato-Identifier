@@ -33,8 +33,24 @@ import time
 import os
 
 # Configuração do modo headless
-HEADLESS_MODE = os.getenv('HEADLESS', '0') == '1' or os.getenv('DISPLAY') is None
-GUI_AVAILABLE = os.getenv('GUI_AVAILABLE', '1') == '1' and not HEADLESS_MODE
+wayland_display = os.getenv('WAYLAND_DISPLAY', '')
+x11_display = os.getenv('DISPLAY', '')
+gui_available_env = os.getenv('GUI_AVAILABLE', '1')
+
+# Detectar se há interface gráfica disponível
+HEADLESS_MODE = (
+    os.getenv('HEADLESS', '0') == '1' or
+    (not wayland_display and not x11_display) or
+    gui_available_env == '0'
+)
+
+GUI_AVAILABLE = gui_available_env == '1' and not HEADLESS_MODE
+
+print(f"🖥️  Display status:")
+print(f"   WAYLAND_DISPLAY: '{wayland_display}'")
+print(f"   DISPLAY: '{x11_display}'")
+print(f"   HEADLESS_MODE: {HEADLESS_MODE}")
+print(f"   GUI_AVAILABLE: {GUI_AVAILABLE}")
 NPU_AVAILABLE = os.getenv('NPU_AVAILABLE', '0') == '1'
 
 # Importações condicionais para GUI
@@ -87,62 +103,80 @@ class VisionSystem:
         logger.info(f"GUI disponível: {GUI_AVAILABLE}")
         
         try:
-            model_path = os.path.join(base_dir, 'data', 'models', 'best_float32_edgetpu.tflite')
+            # Priorizar modelo INT8 quantizado (melhor para NPU)
+            int8_model_path = os.path.join(base_dir, 'data', 'models', 'best_int8.tflite')
+            edgetpu_model_path = os.path.join(base_dir, 'data', 'models', 'best_float32_edgetpu.tflite')
             fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
             label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')
 
-                        # Tentar usar NPU primeiro (se disponível)
-            if NPU_AVAILABLE and CORAL_AVAILABLE and os.path.exists(model_path):
+            # Definir qual modelo usar baseado na disponibilidade (temporariamente priorizando Float32 para debug)
+            if os.path.exists(edgetpu_model_path):
+                primary_model = edgetpu_model_path
+                logger.info("� Modelo EdgeTPU encontrado - usando para debug")
+            elif os.path.exists(fallback_model):
+                primary_model = fallback_model
+                logger.info("� Modelo float32 encontrado - usando para debug")
+            elif os.path.exists(int8_model_path):
+                primary_model = int8_model_path
+                logger.info("� Modelo INT8 quantizado encontrado - último recurso")
+            else:
+                logger.error("❌ Nenhum modelo encontrado!")
+                raise FileNotFoundError("Nenhum modelo válido encontrado")
+
+            # Tentar usar NPU primeiro (se disponível) - TEMPORARIAMENTE DESABILITADO PARA DEBUG
+            if False and NPU_AVAILABLE and CORAL_AVAILABLE and os.path.exists(edgetpu_model_path):
                 logger.info("🧠 Tentando carregar modelo EdgeTPU para NPU...")
                 try:
                     # Usar Coral EdgeTPU library
-                    self.interpreter = make_interpreter(model_path)
-                    logger.info("✅ Modelo carregado com sucesso na NPU (Coral EdgeTPU)!")
+                    self.interpreter = make_interpreter(edgetpu_model_path)
+                    logger.info("✅ Modelo EdgeTPU carregado com sucesso na NPU (Coral EdgeTPU)!")
                 except Exception as e:
                     logger.warning(f"⚠️  Falha ao carregar modelo EdgeTPU: {e}")
                     logger.info("🔄 Tentando delegate VX para NPU...")
                     
-                    # Fallback para delegate VX
+                    # Fallback para delegate VX com modelo INT8
                     try:
                         # Tentar carregar delegate VX para NPU iMX8MP
                         vx_delegate_path = "/usr/lib/libvx_delegate.so"
                         if os.path.exists(vx_delegate_path):
-                            # Carregar delegate VX
+                            # Carregar delegate VX com modelo INT8
                             vx_delegate = tf.load_delegate(vx_delegate_path)
                             self.interpreter = tf.Interpreter(
-                                model_path=model_path,
+                                model_path=primary_model,
                                 experimental_delegates=[vx_delegate]
                             )
-                            logger.info("✅ Modelo carregado com sucesso na NPU (VX Delegate)!")
+                            logger.info(f"✅ Modelo {os.path.basename(primary_model)} carregado com sucesso na NPU (VX Delegate)!")
                         else:
                             raise FileNotFoundError(f"VX Delegate não encontrado: {vx_delegate_path}")
                     except Exception as e2:
                         logger.warning(f"⚠️  Falha ao carregar delegate VX: {e2}")
                         logger.info("🔄 Usando CPU como fallback...")
-                        self.interpreter = tf.Interpreter(model_path=fallback_model if os.path.exists(fallback_model) else model_path)
+                        self.interpreter = tf.Interpreter(model_path=fallback_model if os.path.exists(fallback_model) else primary_model)
             else:
-                # Usar CPU com modelo padrão
-                logger.info("💻 Carregando modelo para CPU...")
-                model_to_use = fallback_model if os.path.exists(fallback_model) else model_path
+                # Usar modelo prioritário (INT8 se disponível)
+                logger.info("💻 Carregando modelo com prioridade para INT8...")
+                model_to_use = primary_model
                 
-                # Tentar delegate VX mesmo sem EdgeTPU
+                # Tentar delegate VX apenas em hardware Toradex real
+                vx_delegate_path = "/usr/lib/libvx_delegate.so"
+                # Verificar múltiplas formas de detectar i.MX8MP/NPU
+                hardware_checks = [
+                    os.path.exists("/sys/bus/platform/devices/38500000.vipsi"),  # VIP device específico
+                    os.path.exists("/sys/devices/platform/soc@0/30000000.bus/30370000.mipi_csi"),  # i.MX8MP CSI
+                    any("imx8mp" in line.lower() for line in open("/proc/cpuinfo", "r").readlines() if "machine" in line.lower()) if os.path.exists("/proc/cpuinfo") else False
+                ]
+                hardware_check = any(hardware_checks)
+                
+                # Tentar delegate VX apenas em hardware Toradex real - TEMPORARIAMENTE DESABILITADO
                 try:
-                    vx_delegate_path = "/usr/lib/libvx_delegate.so"
-                    if os.path.exists(vx_delegate_path):
-                        logger.info("🧠 Tentando delegate VX para aceleração...")
-                        vx_delegate = tf.load_delegate(vx_delegate_path)
-                        self.interpreter = tf.Interpreter(
-                            model_path=model_to_use,
-                            experimental_delegates=[vx_delegate]
-                        )
-                        logger.info("✅ Modelo carregado com delegate VX!")
+                    if False:  # Desabilitado para debug
+                        pass
                     else:
                         self.interpreter = tf.Interpreter(model_path=model_to_use)
-                        logger.info("✅ Modelo carregado na CPU!")
+                        logger.info(f"✅ Modelo {os.path.basename(model_to_use)} carregado na CPU!")
                 except Exception as e:
-                    logger.warning(f"⚠️  Falha ao carregar delegate VX: {e}")
-                    self.interpreter = tf.Interpreter(model_path=model_to_use)
-                    logger.info("✅ Modelo carregado na CPU (sem aceleração)!")
+                    logger.warning(f"⚠️  Falha ao carregar modelo: {e}")
+                    raise e
             
             self.interpreter.allocate_tensors()
             logger.info("🔧 Tensores alocados com sucesso.")
@@ -199,35 +233,49 @@ class VisionSystem:
         try:
             logger.info("Procurando câmeras USB...")
             
-            # Tenta diferentes índices de câmera (0, 1, 2...)
-            for camera_index in range(5):
+            # Primeiro testar índice 2 (conforme informado pelo usuário)
+            camera_indices = [2, 0, 1, 3, 4]  # Priorizar índice 2
+            
+            for camera_index in camera_indices:
                 logger.info(f"Testando câmera índice {camera_index}...")
-                cap = cv2.VideoCapture(camera_index)
+                
+                # Usar backend V4L2 explicitamente
+                cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
                 
                 if cap.isOpened():
+                    # Configurar formato MJPEG para melhor compatibilidade
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    cap.set(cv2.CAP_PROP_FPS, 30)
+                    
+                    # Aguardar estabilização da câmera
+                    import time
+                    time.sleep(0.5)
+                    
                     # Testa se consegue capturar um frame
                     ret, frame = cap.read()
                     if ret and frame is not None:
                         logger.info(f"✅ Câmera USB encontrada no índice {camera_index}")
-                        
-                        # Configurar resolução se possível
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                        cap.set(cv2.CAP_PROP_FPS, 30)
+                        logger.info(f"Frame shape: {frame.shape}")
                         
                         # Verificar configurações aplicadas
                         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         fps = cap.get(cv2.CAP_PROP_FPS)
+                        fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
                         
                         logger.info(f"Câmera configurada: {width}x{height} @ {fps}fps")
+                        logger.info(f"FOURCC: {fourcc}")
                         
                         self.camera = cap
                         self.camera_type = "USB"
                         return True
                     else:
+                        logger.warning(f"Câmera {camera_index} abre mas não retorna frame")
                         cap.release()
                 else:
+                    logger.warning(f"Não foi possível abrir câmera {camera_index}")
                     cap.release()
             
             logger.warning("Nenhuma câmera USB funcional encontrada")
@@ -349,19 +397,55 @@ class VisionSystem:
             self.interpreter.invoke()
             inference_time = time.time() - start_time
 
-            # Verificar outputs disponíveis e acessar com segurança
-            if len(self.output_details) < 4:
-                logger.warning(f"Modelo possui apenas {len(self.output_details)} outputs, esperado 4. Pulando frame.")
-                self._schedule_next_frame(10)
-                return
-
-            # Acessar outputs com verificação de índice
-            try:
-                scores = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
-                boxes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
-                classes = self.interpreter.get_tensor(self.output_details[3]['index'])[0]
-            except IndexError as e:
-                logger.warning(f"Erro ao acessar outputs do modelo: {e}. Outputs disponíveis: {len(self.output_details)}")
+            # Verificar outputs disponíveis e processar adequadamente
+            if len(self.output_details) == 1:
+                # Modelo YOLO com output único (formato: [1, N, 85] onde 85 = 4 box coords + 1 obj conf + 80 classes)
+                output_data = self.interpreter.get_tensor(self.output_details[0]['index'])[0]  # Shape: [N, 85]
+                
+                # Processar detecções YOLO
+                detections = []
+                confidence_threshold = 0.5
+                
+                for detection in output_data:
+                    # detection formato: [x, y, w, h, obj_conf, class1_conf, class2_conf, ...]
+                    obj_confidence = detection[4]
+                    if obj_confidence > confidence_threshold:
+                        # Encontrar classe com maior confiança
+                        class_scores = detection[5:]
+                        class_id = np.argmax(class_scores)
+                        class_confidence = class_scores[class_id]
+                        final_confidence = obj_confidence * class_confidence
+                        
+                        if final_confidence > confidence_threshold:
+                            x, y, w, h = detection[:4]
+                            detections.append({
+                                'bbox': [x - w/2, y - h/2, x + w/2, y + h/2],  # [x1, y1, x2, y2]
+                                'confidence': final_confidence,
+                                'class_id': class_id
+                            })
+                
+                # Simular formato antigo para compatibilidade
+                if detections:
+                    scores = np.array([d['confidence'] for d in detections])
+                    boxes = np.array([d['bbox'] for d in detections])
+                    classes = np.array([d['class_id'] for d in detections])
+                else:
+                    scores = np.array([])
+                    boxes = np.array([]).reshape(0, 4)
+                    classes = np.array([])
+                    
+            elif len(self.output_details) >= 4:
+                # Formato antigo com múltiplos outputs
+                try:
+                    scores = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                    boxes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
+                    classes = self.interpreter.get_tensor(self.output_details[3]['index'])[0]
+                except IndexError as e:
+                    logger.warning(f"Erro ao acessar outputs do modelo: {e}. Outputs disponíveis: {len(self.output_details)}")
+                    self._schedule_next_frame(10)
+                    return
+            else:
+                logger.warning(f"Modelo possui {len(self.output_details)} outputs, formato não suportado. Pulando frame.")
                 self._schedule_next_frame(10)
                 return
 
@@ -451,49 +535,176 @@ class VisionSystem:
             if self.root:
                 self.root.after(delay_ms, self.process_frame)
 
+    def run_camera_loop(self):
+        """Loop principal da câmera baseado no exemplo funcional"""
+        logger.info("Iniciando loop da câmera...")
+        
+        if not self.interpreter:
+            logger.error("Modelo não inicializado. Saindo do processamento.")
+            return
+
+        # Loop principal da câmera
+        while not self.should_quit:
+            try:
+                # Capturar frame
+                frame_original = self.capture_frame()
+                if frame_original is None:
+                    logger.warning("Frame vazio recebido. Tentando novamente...")
+                    continue
+                
+                # Criar cópia do frame para desenhar
+                frame_desenhado = frame_original.copy()
+                frame_h, frame_w, _ = frame_original.shape
+
+                # --- Pré-processamento do Frame ---
+                frame_rgb = cv2.cvtColor(frame_original, cv2.COLOR_BGR2RGB)
+                input_data = cv2.resize(frame_rgb, (self.input_width, self.input_height))
+                
+                # Normalizar dependendo do tipo do modelo
+                if self.input_details[0]['dtype'] == np.uint8:  # Para modelos quantizados (INT8)
+                    input_data = np.expand_dims(input_data, axis=0).astype(np.uint8)
+                    logger.debug("🔢 Usando dados uint8 para modelo quantizado")
+                else:  # Para modelos float
+                    input_data = np.expand_dims(input_data, axis=0)
+                    input_data = np.float32(input_data) / 255.0
+                    logger.debug("🔢 Usando dados float32 normalizados para modelo float")
+
+                # --- Executar Inferência ---
+                start_time = time.time()
+                self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
+                self.interpreter.invoke()
+                inference_time = time.time() - start_time
+
+                # --- Processar Resultados ---
+                if len(self.output_details) == 1:
+                    # Modelo YOLO com output único
+                    output_data = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                    
+                    # Processar detecções YOLO
+                    detections = []
+                    confidence_threshold = 0.5
+                    
+                    for detection in output_data:
+                        obj_confidence = detection[4]
+                        if obj_confidence > confidence_threshold:
+                            class_scores = detection[5:]
+                            class_id = np.argmax(class_scores)
+                            class_confidence = class_scores[class_id]
+                            final_confidence = obj_confidence * class_confidence
+                            
+                            if final_confidence > confidence_threshold:
+                                x, y, w, h = detection[:4]
+                                detections.append({
+                                    'bbox': [x - w/2, y - h/2, x + w/2, y + h/2],
+                                    'confidence': final_confidence,
+                                    'class_id': class_id
+                                })
+                    
+                    # Simular formato antigo
+                    if detections:
+                        scores = np.array([d['confidence'] for d in detections])
+                        boxes = np.array([d['bbox'] for d in detections])
+                        classes = np.array([d['class_id'] for d in detections])
+                    else:
+                        scores = np.array([])
+                        boxes = np.array([]).reshape(0, 4)
+                        classes = np.array([])
+                        
+                elif len(self.output_details) >= 4:
+                    # Formato antigo com múltiplos outputs
+                    try:
+                        scores = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+                        boxes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
+                        classes = self.interpreter.get_tensor(self.output_details[3]['index'])[0]
+                    except IndexError as e:
+                        logger.warning(f"Erro ao acessar outputs: {e}")
+                        continue
+                else:
+                    logger.warning(f"Modelo possui {len(self.output_details)} outputs, formato não suportado.")
+                    continue
+                    logger.warning(f"Erro ao acessar outputs do modelo: {e}")
+                    continue
+
+                highest_priority_class = None
+                highest_priority = 0
+                detections_count = 0
+
+                # --- Desenhar Detecções ---
+                for i in range(len(scores)):
+                    if scores[i] > 0.5:
+                        detections_count += 1
+                        
+                        # Converter coordenadas para pixels
+                        y1 = int(max(1, boxes[i][0] * frame_h))
+                        x1 = int(max(1, boxes[i][1] * frame_w))
+                        y2 = int(min(frame_h, boxes[i][2] * frame_h))
+                        x2 = int(min(frame_w, boxes[i][3] * frame_w))
+                        
+                        object_name = self.labels[int(classes[i])]
+                        color = self.colors.get(object_name, (0, 255, 0))
+                        
+                        # Desenhar retângulo e texto
+                        cv2.rectangle(frame_desenhado, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(frame_desenhado, f'{object_name}: {scores[i]:.2f}', (x1, y1 - 10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+                        priority = self.class_priority.get(object_name, 0)
+                        if priority > highest_priority:
+                            highest_priority = priority
+                            highest_priority_class = object_name
+
+                # Adicionar informações de performance
+                perf_text = f"Inference: {inference_time*1000:.1f}ms | Detections: {detections_count}"
+                cv2.putText(frame_desenhado, perf_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                # --- Enviar para PLC ---
+                if highest_priority_class:
+                    plc_data = self.class_values[highest_priority_class]
+                    success = self.plc.write_db(plc_data)
+                    if success:
+                        logger.debug(f"✅ Enviado para PLC: {highest_priority_class} ({plc_data})")
+
+                # --- Exibir Frame ---
+                if self.use_opencv_gui and not self.headless:
+                    cv2.imshow(self.window_name, frame_desenhado)
+                    cv2.moveWindow(self.window_name, 0, 0)
+                    
+                    # Verificar se usuário quer sair
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q') or key == 27:  # 'q' ou ESC
+                        logger.info("Usuário solicitou fechamento da aplicação")
+                        self.should_quit = True
+                        break
+
+            except Exception as e:
+                logger.error(f"Erro no loop de processamento: {e}")
+                continue
+
+        logger.info("Loop da câmera finalizado")
+
     def start(self):
         if self.init_camera():
-            # Tenta conectar ao PLC, mas não para a aplicação se falhar
+            # Tenta conectar ao PLC
             plc_status = self.plc.init_plc()
             if plc_status:
                 logger.info("Sistema iniciado com câmera e PLC")
             else:
-                logger.warning("Sistema iniciado apenas com câmera - PLC será reconectado automaticamente")
-            
-            logger.info("Iniciando o loop de processamento de frames.")
+                logger.warning("Sistema iniciado apenas com câmera - PLC indisponível")
             
             # Configurar OpenCV GUI se necessário
             if self.use_opencv_gui:
                 cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
                 cv2.resizeWindow(self.window_name, 800, 600)
-                logger.info("Janela OpenCV criada - use ESC para sair")
+                logger.info("Janela OpenCV criada - use ESC ou 'q' para sair")
             
-            self.process_frame()
+            # Iniciar loop principal
+            self.run_camera_loop()
             
-            if self.headless:
-                # Em modo headless, manter o programa rodando
-                logger.info("Modo headless ativo - aplicação rodando em background")
-                try:
-                    while True:
-                        import time
-                        time.sleep(1)
-                except KeyboardInterrupt:
-                    logger.info("Interrupção do usuário detectada - encerrando...")
-                    self.on_closing()
-            elif self.use_opencv_gui:
-                # Com OpenCV GUI, manter loop até usuário sair
-                logger.info("OpenCV GUI ativo - aguardando interação do usuário")
-                try:
-                    while not self.should_quit:
-                        import time
-                        time.sleep(0.1)
-                except KeyboardInterrupt:
-                    logger.info("Interrupção do usuário detectada - encerrando...")
-                    self.on_closing()
         else:
             logger.error("Não foi possível iniciar a câmera. Encerrando.")
-            if self.root:
-                self.root.destroy()
+        
+        # Cleanup final
+        self.on_closing()
             
     def on_closing(self):
         logger.info("Fechando a aplicação...")
