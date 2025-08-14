@@ -1,12 +1,57 @@
 import cv2
 import logging
 import numpy as np
+import os
 import tflite_runtime.interpreter as tflite
-from plc import Plc # Supondo que seu arquivo plc.py está acessível
+# from plc import Plc # Supondo que seu arquivo plc.py está acessível
 
 # --- Configuração do Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def detect_available_delegates():
+    """
+    Detecta delegates de aceleração disponíveis no sistema Verdin iMX8MP.
+    
+    Returns:
+        tuple: (delegate_path, delegate_type) onde delegate_type pode ser:
+               'imx_nn', 'ethos_u', 'vx_gpu', 'gpu_gl', 'cpu'
+    """
+    delegates_info = [
+        ("/usr/lib/libvx_delegate.so", "vx_gpu", "VX GPU/VPU"),
+        ("/usr/lib/aarch64-linux-gnu/libvx_delegate.so", "vx_gpu", "VX GPU/VPU (alt)"),
+        ("/usr/lib/arm-linux-gnueabihf/libvx_delegate.so", "vx_gpu", "VX GPU/VPU (arm)"),
+        # Delegates específicos (podem não estar presentes em todas as versões)
+        ("/usr/lib/libimxnn_delegate.so", "imx_nn", "NPU específico iMX"),
+        ("/usr/lib/libethosu_delegate.so", "ethos_u", "Ethos-U NPU"),
+    ]
+    
+    for delegate_path, delegate_type, description in delegates_info:
+        if os.path.exists(delegate_path):
+            logger.info(f"Delegate encontrado: {description} em {delegate_path}")
+            return delegate_path, delegate_type
+    
+    # Verificar se há bibliotecas GPU disponíveis para aceleração alternativa
+    gpu_libs = [
+        "/usr/lib/libGAL.so",
+        "/usr/lib/aarch64-linux-gnu/libGAL.so", 
+        "/usr/lib/libEGL.so",
+        "/usr/lib/libGLESv2.so"
+    ]
+    
+    gpu_available = False
+    for lib in gpu_libs:
+        if os.path.exists(lib):
+            gpu_available = True
+            logger.info(f"Biblioteca GPU encontrada: {lib}")
+            break
+    
+    if gpu_available:
+        logger.info("GPU disponível - TensorFlow Lite pode usar aceleração GPU interna")
+        return None, "gpu_gl"
+    
+    logger.warning("Nenhum delegate ou GPU encontrados. Usando CPU.")
+    return None, "cpu"
 
 def supressao_nao_maxima(boxes, scores, iou_threshold):
     """Aplica Supressão Não-Máxima (NMS) para remover caixas sobrepostas."""
@@ -54,7 +99,7 @@ class VisionSystem:
         self.class_priority = {'PEDRA': 3, 'NOK': 2, 'OK': 1}
         self.class_values = {'OK': 0, 'NOK': 1, 'PEDRA': 2}
         self.window_name = 'Vision System'
-        self.plc = Plc()
+        # self.plc = Plc()
         self.camera = None # Agora será um objeto cv2.VideoCapture
 
         # --- Inicialização do Modelo TFLite ---
@@ -75,13 +120,52 @@ class VisionSystem:
 
             # Carrega o delegate da NPU, se o caminho for fornecido
             experimental_delegates = []
+            delegate_loaded = False
             if delegate_path:
                 try:
-                    experimental_delegates.append(tflite.load_delegate(delegate_path))
-                    logger.info(f"Delegate da NPU em '{delegate_path}' carregado com sucesso.")
+                    # Tentar carregar o delegate
+                    delegate = tflite.load_delegate(delegate_path)
+                    experimental_delegates.append(delegate)
+                    
+                    # Verificar se é um delegate VX/GPU/NPU específico
+                    if "libethosu_delegate.so" in delegate_path:
+                        logger.info(f"✅ Delegate Ethos-U NPU carregado: '{delegate_path}'")
+                        delegate_loaded = True
+                    elif "libvx_delegate.so" in delegate_path:
+                        logger.info(f"✅ Delegate VX GPU/VPU carregado: '{delegate_path}'")
+                        delegate_loaded = True
+                    elif "libimxnn_delegate.so" in delegate_path:
+                        logger.info(f"✅ Delegate iMX NN NPU carregado: '{delegate_path}'")
+                        delegate_loaded = True
+                    else:
+                        logger.info(f"✅ Delegate carregado: '{delegate_path}'")
+                        delegate_loaded = True
+                        
                 except Exception as e:
-                    logger.error(f"Erro ao carregar o delegate da NPU: {e}")
-                    logger.warning("Executando o modelo na CPU.")
+                    logger.error(f"❌ Erro ao carregar delegate '{delegate_path}': {e}")
+                    logger.warning("⚠️  Tentando carregar o modelo sem delegate...")
+                    experimental_delegates = []  # Limpar delegates com erro
+            
+            if not delegate_loaded and delegate_path:
+                logger.warning("⚠️  Nenhum delegate pôde ser carregado. Usando CPU.")
+            elif not delegate_path:
+                logger.info("🖥️  Executando modelo na CPU (sem aceleração de hardware).")
+            
+            # Tentar usar GPU interna do TensorFlow Lite se disponível
+            use_gpu = False
+            if not delegate_loaded:
+                try:
+                    # Verifica se há suporte a GPU no TensorFlow Lite
+                    import tflite_runtime.interpreter as tflite_gpu
+                    if hasattr(tflite_gpu, 'experimental') and hasattr(tflite_gpu.experimental, 'get_gpu_delegates'):
+                        gpu_delegates = tflite_gpu.experimental.get_gpu_delegates()
+                        if gpu_delegates:
+                            experimental_delegates.extend(gpu_delegates)
+                            logger.info("🚀 Usando delegate GPU interno do TensorFlow Lite")
+                            use_gpu = True
+                except Exception as gpu_e:
+                    logger.debug(f"GPU interna não disponível: {gpu_e}")
+                    pass
             
             # Carrega o interpretador TFLite com o delegate (se houver)
             self.interpreter = tflite.Interpreter(
@@ -98,12 +182,51 @@ class VisionSystem:
             self.input_height = self.input_details['shape'][1]
             self.input_width = self.input_details['shape'][2]
             
-            logger.info(f"Modelo TFLite '{model_path}' carregado com sucesso.")
-            logger.info(f"Tamanho de entrada do modelo: {self.input_width}x{self.input_height}")
+            logger.info(f"📋 Modelo TFLite carregado: '{model_path}'")
+            logger.info(f"📐 Tamanho de entrada: {self.input_width}x{self.input_height}")
+            logger.info(f"🔧 Tipo de entrada: {self.input_details['dtype']}")
+            logger.info(f"🎯 Classes disponíveis: {len(self.labels)}")
+            
+            # Teste rápido de inferência para verificar se o delegate está funcionando
+            # self._test_inference_speed()
 
         except Exception as e:
             logger.error(f"Erro fatal ao inicializar o modelo TFLite: {e}")
             self.interpreter = None # Garante que o sistema não continue se o modelo falhar
+
+    # def _test_inference_speed(self):
+    #     """Testa a velocidade de inferência para verificar se o delegate está funcionando."""
+    #     try:
+    #         import time
+    #         # Cria uma entrada de teste
+    #         if self.input_details['dtype'] == np.uint8:
+    #             test_input = np.random.randint(0, 255, 
+    #                 (1, self.input_height, self.input_width, 3), dtype=np.uint8)
+    #         else:
+    #             test_input = np.random.random(
+    #                 (1, self.input_height, self.input_width, 3)).astype(np.float32)
+            
+    #         # Executa algumas inferências de teste
+    #         times = []
+    #         for _ in range(3):
+    #             start_time = time.time()
+    #             self.interpreter.set_tensor(self.input_details['index'], test_input)
+    #             self.interpreter.invoke()
+    #             end_time = time.time()
+    #             times.append((end_time - start_time) * 1000)  # em ms
+            
+    #         avg_time = np.mean(times)
+    #         logger.info(f"⚡ Tempo médio de inferência: {avg_time:.1f}ms")
+            
+    #         if avg_time < 50:
+    #             logger.info("🚀 Performance excelente - delegate de hardware funcionando!")
+    #         elif avg_time < 100:
+    #             logger.info("✅ Performance boa - possível aceleração de hardware")
+    #         else:
+    #             logger.warning("🐌 Performance lenta - verificar se delegate está funcionando")
+                
+    #     except Exception as e:
+    #         logger.warning(f"Não foi possível testar performance: {e}")
 
     def init_camera(self) -> bool:
         """Inicializa a câmera USB usando OpenCV."""
@@ -128,8 +251,8 @@ class VisionSystem:
             logger.error("Modelo não inicializado. Saindo do processamento.")
             return
             
-        if not self.plc.init_plc():
-            logger.error("Falha ao inicializar o PLC")
+        # if not self.plc.init_plc():
+        #     logger.error("Falha ao inicializar o PLC")
 
         while self.camera.isOpened():
             try:
@@ -197,13 +320,13 @@ class VisionSystem:
                         highest_priority_class = label
 
                 # Escreve a classe de maior prioridade no PLC
-                if highest_priority_class:
-                    try:
-                        plc_data = self.class_values[highest_priority_class]
-                        self.plc.write_db(plc_data)
-                        logger.info(f"Escreveu a classe {highest_priority_class} (valor {plc_data}) para o PLC")
-                    except Exception as e:
-                        logger.error(f"Falha ao escrever no PLC: {e}")
+                # if highest_priority_class:
+                #     try:
+                #         plc_data = self.class_values[highest_priority_class]
+                #         self.plc.write_db(plc_data)
+                #         logger.info(f"Escreveu a classe {highest_priority_class} (valor {plc_data}) para o PLC")
+                #     except Exception as e:
+                #         logger.error(f"Falha ao escrever no PLC: {e}")
 
                 # Exibe o frame final
                 cv2.imshow(self.window_name, frame_desenhado)
@@ -236,14 +359,20 @@ class VisionSystem:
 def main():
     """Função principal para rodar o sistema de visão."""
     
-    # Caminho padrão para o delegate da NPU nos sistemas Torizon com i.MX 8M Plus
-    # Deixe como None se não quiser usar a NPU
-    NPU_DELEGATE_PATH = "/usr/lib/libethosu_delegate.so"
+    # Detecta automaticamente o melhor delegate disponível
+    delegate_path, delegate_type = detect_available_delegates()
+    
+    if delegate_type == "cpu":
+        logger.info("🖥️  Usando processamento em CPU")
+    elif delegate_type == "gpu_gl":
+        logger.info("🎮 GPU disponível - TensorFlow Lite pode usar aceleração interna")
+    else:
+        logger.info(f"🚀 Usando aceleração de hardware: {delegate_type}")
 
     with VisionSystem(
         model_path='data/models/best_int8.tflite',
         labels_path='data/models/labels.txt',
-        delegate_path=NPU_DELEGATE_PATH
+        delegate_path=delegate_path
     ) as vision_system:
         if vision_system.camera and vision_system.camera.isOpened():
             vision_system.process_frame()

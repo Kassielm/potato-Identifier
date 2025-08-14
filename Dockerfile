@@ -36,6 +36,18 @@ RUN apt-get -q -y update && \
     libxrender1 \
     libxcb-xinerama0 \
     libxcb-cursor0 \
+# Pacotes base para runtime de GPU/hardware
+    mesa-utils \
+    libdrm2 \
+    libgbm1 \
+    libegl1-mesa \
+    libgles2-mesa \
+# Ferramentas para download e compilação
+    wget \
+    curl \
+    build-essential \
+    cmake \
+    git \
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     # __torizon_packages_prod_start__
     # __torizon_packages_prod_end__
@@ -45,20 +57,32 @@ RUN apt-get -q -y update && \
     ldconfig && \
     usermod -aG video root
 
+# Instalar delegates de ML para iMX8MP
+COPY scripts/install_ml_delegates.sh /tmp/install_ml_delegates.sh
+RUN chmod +x /tmp/install_ml_delegates.sh && \
+    /tmp/install_ml_delegates.sh && \
+    rm /tmp/install_ml_delegates.sh && \
+    usermod -aG video root
+
 # Create virtualenv
 RUN python3 -m venv ${APP_ROOT}/.venv --system-site-packages
 
 # Install pip packages on venv
 COPY requirements-release.txt /requirements-release.txt
 RUN . ${APP_ROOT}/.venv/bin/activate && \
-    pip3 install --upgrade pip && pip3 install -r requirements-release.txt && \
-    rm requirements-release.txt
+    pip3 install --upgrade pip && \
+    pip3 install -r requirements-release.txt && \
+    rm requirements-release.txt && \
+    # Tentar instalar TensorFlow Lite com suporte a delegates
+    pip3 install --no-cache-dir --extra-index-url https://google-coral.github.io/py-repo/ tflite-runtime || \
+    echo "TensorFlow Lite padrão já instalado via requirements"
 
 # Copy the application source code in the workspace to the $APP_ROOT directory
 # path inside the container, where $APP_ROOT is the torizon_app_root
 # configuration defined in settings.json
 COPY ./src ${APP_ROOT}/src
 COPY data/ ${APP_ROOT}/data/
+COPY scripts/ ${APP_ROOT}/scripts/
 
 WORKDIR ${APP_ROOT}
 ENV APP_ROOT=${APP_ROOT}
