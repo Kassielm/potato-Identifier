@@ -1,0 +1,43 @@
+services:
+  potato-identifier:
+    container_name: potato-identifier
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kassiell/potato-identifier
+    privileged: true
+    network_mode: "host"
+    user: "1000:1000"
+    group_add:
+      - "44"
+      - "20"
+    devices:
+      - "/dev/video3:/dev/video3"
+      - "/dev/video2:/dev/video2"
+      - "/dev/galcore:/dev/galcore"
+    environment:
+      - "DISPLAY=:0"
+      - CAPTURE_DEVICE=/dev/video2
+      - USE_HW_ACCELERATED_INFERENCE=1
+      - USE_GPU_INFERENCE=0
+      - ACCEPT_FSL_EULA=1
+      - XDG_RUNTIME_DIR=/tmp/1000-runtime-dir
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - CORAL_ENABLE_EDGETPU=1
+      - NPU_AVAILABLE=1
+      - VIPNPU_DEVICE=/dev/vipnpu
+      - VIV_MGPU_KERNEL_CONFIG=1
+      - IMX_VPU_ENABLE_TILE_OPTIMIZE=1
+      - OMP_NUM_THREADS=4
+      - TF_NUM_INTEROP_THREADS=4
+      - TF_NUM_INTRAOP_THREADS=4
+    volumes:
+      - /dev:/dev
+      - /tmp:/tmp
+      - /run/udev/:/run/udev/
+    device_cgroup_rules:
+      - 'c 4:* rmw'
+      - 'c 13:* rmw'
+      - 'c 199:* rmw'
+      - 'c 226:* rmw'
+      - 'c 81:* rmw'

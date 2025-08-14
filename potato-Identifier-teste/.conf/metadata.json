@@ -1,0 +1,8 @@
+{
+    "projectName": "potatoIdentifier",
+    "templateName": "python3Console",
+    "containerName": "potato-identifier",
+    "torizonOSMajor": "7",
+    "hasCustomFields": false,
+    "customFields": []
+}

@@ -1,21 +1,17 @@
 services:
   potato-identifier-gui:
-    build:
-      context: .
-      dockerfile: Dockerfile.gui
-      platforms:
-        - linux/arm64
+    image: potato-identifier:gui
     container_name: potato-identifier-gui
     restart: unless-stopped
     
     # Configurações de ambiente
     environment:
-      - DISPLAY=:0
       - WAYLAND_DISPLAY=wayland-0
       - XDG_RUNTIME_DIR=/tmp/1000-runtime-dir
       - XDG_SESSION_TYPE=wayland
       - QT_QPA_PLATFORM=wayland
       - GDK_BACKEND=wayland
+      - SDL_VIDEODRIVER=wayland
       - TF_CPP_MIN_LOG_LEVEL=2
       - CORAL_ENABLE_EDGETPU=1
       - NPU_AVAILABLE=1
@@ -36,11 +32,12 @@ services:
     
     # Acesso total necessário para configurar permissões
     privileged: true
-    user: "root"  # Mudamos para root temporariamente para configurar permissões
+    user: "1000:1000"  # Usar usuário torizon direto
     
     # Volumes para GUI e dispositivos
     volumes:
       - /tmp:/tmp:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev:rw
       - /run/udev:/run/udev:ro
       - /var/run/dbus:/var/run/dbus:ro
@@ -54,7 +51,7 @@ services:
     devices:
       - /dev/dri:/dev/dri                    # GPU Vivante
       - /dev/galcore:/dev/galcore            # Galcore GPU driver
-      - /dev/video0:/dev/video0              # Câmera principal
+      - /dev/video2:/dev/video2              # Câmera principal
       - /dev/vipnpu:/dev/vipnpu              # NPU (Neural Processing Unit)
       - /dev/mxc_hantro:/dev/mxc_hantro      # VPU (Video Processing Unit)
       - /dev/mxc_hantro_vc8000e:/dev/mxc_hantro_vc8000e  # Encoder VPU
@@ -83,6 +80,7 @@ services:
     environment:
       - ACCEPT_FSL_EULA=1
       - WESTON_DISABLE_ATOMIC=1
+      - WESTON_XWAYLAND=1
     
     # Acesso a dispositivos gráficos
     privileged: true

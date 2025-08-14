@@ -74,15 +74,15 @@ class VisionSystem:
     def __init__(self, root=None):
         self.root = root
         self.headless = HEADLESS_MODE or root is None
+        self.use_opencv_gui = not self.headless  # Usar OpenCV GUI ao invés de tkinter
         
-        if not self.headless:
-            self.root.title("Vision System")
-            # Cria um Canvas no Tkinter para exibir o vídeo
-            self.canvas = tk.Canvas(root, width=640, height=480)
-            self.canvas.pack()
+        # Variáveis para OpenCV GUI
+        self.window_name = "Potato Identifier - Vision System"
+        self.should_quit = False
 
         logger.info("Iniciando a inicialização do VisionSystem...")
         logger.info(f"Modo headless: {self.headless}")
+        logger.info(f"Usando OpenCV GUI: {self.use_opencv_gui}")
         logger.info(f"NPU disponível: {NPU_AVAILABLE}")
         logger.info(f"GUI disponível: {GUI_AVAILABLE}")
         
@@ -91,7 +91,7 @@ class VisionSystem:
             fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
             label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')
 
-            # Tentar usar NPU primeiro (se disponível)
+                        # Tentar usar NPU primeiro (se disponível)
             if NPU_AVAILABLE and CORAL_AVAILABLE and os.path.exists(model_path):
                 logger.info("🧠 Tentando carregar modelo EdgeTPU para NPU...")
                 try:
@@ -99,51 +99,50 @@ class VisionSystem:
                     self.interpreter = make_interpreter(model_path)
                     logger.info("✅ Modelo carregado com sucesso na NPU (Coral EdgeTPU)!")
                 except Exception as e:
-                    logger.warning(f"❌ Falha ao carregar na NPU: {e}")
-                    logger.info("🔄 Carregando modelo CPU como fallback...")
-                    if os.path.exists(fallback_model):
-                        self.interpreter = tf.Interpreter(model_path=fallback_model)
-                        logger.info("✅ Modelo carregado na CPU!")
-                    else:
-                        logger.error(f"❌ Modelo fallback não encontrado: {fallback_model}")
-                        raise Exception("Nenhum modelo disponível")
-            elif NPU_AVAILABLE and not CORAL_AVAILABLE and os.path.exists(model_path):
-                logger.info("🧠 Tentando carregar modelo EdgeTPU com delegate padrão...")
-                try:
-                    # Tentar delegate EdgeTPU padrão
-                    if USING_TFLITE_RUNTIME:
-                        self.interpreter = tf.Interpreter(
-                            model_path=model_path,
-                            experimental_delegates=[tf.load_delegate('libedgetpu.so.1')]
-                        )
-                        logger.info("✅ Modelo carregado com EdgeTPU delegate!")
-                    else:
-                        # Fallback para CPU se não for tflite_runtime
-                        logger.info("🔄 TensorFlow completo - usando CPU...")
+                    logger.warning(f"⚠️  Falha ao carregar modelo EdgeTPU: {e}")
+                    logger.info("🔄 Tentando delegate VX para NPU...")
+                    
+                    # Fallback para delegate VX
+                    try:
+                        # Tentar carregar delegate VX para NPU iMX8MP
+                        vx_delegate_path = "/usr/lib/libvx_delegate.so"
+                        if os.path.exists(vx_delegate_path):
+                            # Carregar delegate VX
+                            vx_delegate = tf.load_delegate(vx_delegate_path)
+                            self.interpreter = tf.Interpreter(
+                                model_path=model_path,
+                                experimental_delegates=[vx_delegate]
+                            )
+                            logger.info("✅ Modelo carregado com sucesso na NPU (VX Delegate)!")
+                        else:
+                            raise FileNotFoundError(f"VX Delegate não encontrado: {vx_delegate_path}")
+                    except Exception as e2:
+                        logger.warning(f"⚠️  Falha ao carregar delegate VX: {e2}")
+                        logger.info("🔄 Usando CPU como fallback...")
                         self.interpreter = tf.Interpreter(model_path=fallback_model if os.path.exists(fallback_model) else model_path)
+            else:
+                # Usar CPU com modelo padrão
+                logger.info("💻 Carregando modelo para CPU...")
+                model_to_use = fallback_model if os.path.exists(fallback_model) else model_path
+                
+                # Tentar delegate VX mesmo sem EdgeTPU
+                try:
+                    vx_delegate_path = "/usr/lib/libvx_delegate.so"
+                    if os.path.exists(vx_delegate_path):
+                        logger.info("🧠 Tentando delegate VX para aceleração...")
+                        vx_delegate = tf.load_delegate(vx_delegate_path)
+                        self.interpreter = tf.Interpreter(
+                            model_path=model_to_use,
+                            experimental_delegates=[vx_delegate]
+                        )
+                        logger.info("✅ Modelo carregado com delegate VX!")
+                    else:
+                        self.interpreter = tf.Interpreter(model_path=model_to_use)
                         logger.info("✅ Modelo carregado na CPU!")
                 except Exception as e:
-                    logger.warning(f"❌ Falha ao carregar EdgeTPU delegate: {e}")
-                    logger.info("🔄 Carregando modelo CPU como fallback...")
-                    if os.path.exists(fallback_model):
-                        self.interpreter = tf.Interpreter(model_path=fallback_model)
-                        logger.info("✅ Modelo carregado na CPU!")
-                    else:
-                        self.interpreter = tf.Interpreter(model_path=model_path)
-                        logger.info("✅ Modelo EdgeTPU carregado na CPU!")
-            else:
-                # Usar CPU por padrão
-                if os.path.exists(fallback_model):
-                    logger.info("💻 Carregando modelo para CPU...")
-                    self.interpreter = tf.Interpreter(model_path=fallback_model)
-                    logger.info("✅ Modelo carregado na CPU!")
-                elif os.path.exists(model_path):
-                    logger.info("💻 Carregando modelo EdgeTPU na CPU...")
-                    self.interpreter = tf.Interpreter(model_path=model_path)
-                    logger.info("✅ Modelo EdgeTPU carregado na CPU!")
-                else:
-                    logger.error("❌ Nenhum modelo encontrado!")
-                    raise Exception("Nenhum modelo disponível")
+                    logger.warning(f"⚠️  Falha ao carregar delegate VX: {e}")
+                    self.interpreter = tf.Interpreter(model_path=model_to_use)
+                    logger.info("✅ Modelo carregado na CPU (sem aceleração)!")
             
             self.interpreter.allocate_tensors()
             logger.info("🔧 Tensores alocados com sucesso.")
@@ -405,18 +404,22 @@ class VisionSystem:
                 else:
                     logger.debug(f"⚠️ PLC indisponível - valor não enviado: {highest_priority_class} ({plc_data})")
             
-            # --- Lógica de Exibição com Tkinter (apenas em modo GUI) ---
-            if not self.headless:
-                # Converte a imagem do OpenCV (BGR) para o formato do Pillow (RGB)
-                img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                # Redimensiona se necessário para caber na interface
-                img = img.resize((640, 480), Image.Resampling.LANCZOS)
-                # Converte para um formato que o Tkinter possa usar
-                imgtk = ImageTk.PhotoImage(image=img)
-                # Atualiza o canvas com a nova imagem
-                self.canvas.delete("all")  # Limpar canvas anterior
-                self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
-                self.canvas.imgtk = imgtk # Guarda uma referência para evitar que a imagem seja apagada
+            # --- Lógica de Exibição ---
+            if self.use_opencv_gui:
+                # Usar OpenCV para exibir a imagem (mais simples e compatível)
+                # Redimensionar frame para exibição se necessário
+                display_frame = cv2.resize(frame, (800, 600))
+                
+                # Exibir usando OpenCV
+                cv2.imshow(self.window_name, display_frame)
+                
+                # Verificar se usuário quer sair (ESC ou fechou janela)
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27 or cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) < 1:  # ESC ou janela fechada
+                    logger.info("Usuário solicitou fechamento da aplicação")
+                    self.should_quit = True
+                    self.on_closing()
+                    return
 
             # Agenda a próxima chamada deste método para criar o loop
             self._schedule_next_frame(10)
@@ -427,16 +430,26 @@ class VisionSystem:
             self._schedule_next_frame(100)  # Espera um pouco mais em caso de erro
 
     def _schedule_next_frame(self, delay_ms=10):
-        """Agenda a próxima execução do process_frame, com suporte para modo headless"""
+        """Agenda a próxima execução do process_frame, com suporte para modo headless e OpenCV"""
+        if self.should_quit:
+            return
+            
         if self.headless:
             # Em modo headless, usa threading.Timer em vez de tkinter.after
             import threading
             timer = threading.Timer(delay_ms / 1000.0, self.process_frame)
             timer.daemon = True
             timer.start()
+        elif self.use_opencv_gui:
+            # Com OpenCV GUI, usa threading também
+            import threading
+            timer = threading.Timer(delay_ms / 1000.0, self.process_frame)
+            timer.daemon = True
+            timer.start()
         else:
-            # Em modo GUI, usa o tkinter.after
-            self.root.after(delay_ms, self.process_frame)
+            # Em modo GUI tkinter (fallback), usa o tkinter.after
+            if self.root:
+                self.root.after(delay_ms, self.process_frame)
 
     def start(self):
         if self.init_camera():
@@ -448,6 +461,13 @@ class VisionSystem:
                 logger.warning("Sistema iniciado apenas com câmera - PLC será reconectado automaticamente")
             
             logger.info("Iniciando o loop de processamento de frames.")
+            
+            # Configurar OpenCV GUI se necessário
+            if self.use_opencv_gui:
+                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(self.window_name, 800, 600)
+                logger.info("Janela OpenCV criada - use ESC para sair")
+            
             self.process_frame()
             
             if self.headless:
@@ -460,13 +480,25 @@ class VisionSystem:
                 except KeyboardInterrupt:
                     logger.info("Interrupção do usuário detectada - encerrando...")
                     self.on_closing()
+            elif self.use_opencv_gui:
+                # Com OpenCV GUI, manter loop até usuário sair
+                logger.info("OpenCV GUI ativo - aguardando interação do usuário")
+                try:
+                    while not self.should_quit:
+                        import time
+                        time.sleep(0.1)
+                except KeyboardInterrupt:
+                    logger.info("Interrupção do usuário detectada - encerrando...")
+                    self.on_closing()
         else:
             logger.error("Não foi possível iniciar a câmera. Encerrando.")
-            if not self.headless:
+            if self.root:
                 self.root.destroy()
             
     def on_closing(self):
         logger.info("Fechando a aplicação...")
+        self.should_quit = True
+        
         try:
             if hasattr(self, 'camera') and self.camera:
                 if self.camera_type == "USB":
@@ -488,7 +520,13 @@ class VisionSystem:
         except Exception as e:
             logger.error(f"Erro ao desconectar PLC: {e}")
         
-        if not self.headless:
+        # Fechar janela OpenCV
+        if self.use_opencv_gui:
+            cv2.destroyAllWindows()
+            logger.info("Janela OpenCV fechada.")
+        
+        # Fechar tkinter se estiver sendo usado
+        if self.root:
             self.root.destroy()
 
 # --- Ponto de Entrada Principal do Script ---
@@ -503,12 +541,9 @@ if __name__ == "__main__":
             app = VisionSystem(root=None)
             app.start()
         else:
-            logger.info("Modo GUI - iniciando com interface gráfica")
-            root = tk.Tk()
-            app = VisionSystem(root)
-            root.protocol("WM_DELETE_WINDOW", app.on_closing)
+            logger.info("Modo GUI detectado - iniciando com OpenCV GUI")
+            app = VisionSystem(root=None)  # Não usar tkinter
             app.start()
-            root.mainloop()
     except Exception as e:
         logger.critical(f"Erro fatal na execução principal: {e}", exc_info=True)
     finally:

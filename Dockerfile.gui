@@ -8,7 +8,7 @@ ARG IMAGE_ARCH
 ARG GPU="-vivante"
 ARG NPU="true"
 
-# Instalar dependências do sistema
+# Instalar pacotes do sistema
 RUN apt-get -q -y update && \
     apt-get -q -y install --no-install-recommends \
         python3-full \
@@ -52,7 +52,15 @@ RUN apt-get -q -y update && \
         curl \
         udev \
         wget \
-        unzip && \
+        unzip \
+        # Pacotes para NPU e GPU
+        libdrm2 \
+        libgbm1 \
+        libegl1-mesa \
+        libgles2-mesa \
+        mesa-utils \
+        file \
+        binutils && \
     rm -rf /var/lib/apt/lists/*
 
 # Configurar locale
@@ -81,14 +89,20 @@ RUN set -e; \
     pip install --no-cache-dir --extra-index-url https://google-coral.github.io/py-repo/ tflite-runtime pycoral || \
     # Se falhar, tentar instalar TensorFlow Lite via pip padrão
     (echo "Fallback para TensorFlow Lite padrão..." && \
-     pip install --no-cache-dir tensorflow-lite==2.14.0) || \
-    # Se ainda falhar, tentar TensorFlow completo (só o lite)
-    (echo "Fallback para TensorFlow completo..." && \
-     pip install --no-cache-dir tensorflow==2.14.0)
+     pip install --no-cache-dir tflite-runtime==2.14.0) || \
+    # Se ainda falhar, tentar versão genérica
+    (echo "Fallback para versão genérica..." && \
+     pip install --no-cache-dir tflite-runtime)
 
 # Copiar código da aplicação
 COPY src/ ./src/
 COPY data/ ./data/
+
+# Instalar delegates para NPU
+COPY scripts/install_delegates.sh /tmp/install_delegates.sh
+RUN chmod +x /tmp/install_delegates.sh && \
+    /tmp/install_delegates.sh && \
+    rm /tmp/install_delegates.sh
 
 # Configurar variáveis de ambiente para GUI
 ENV DISPLAY=:0
@@ -101,6 +115,7 @@ ENV GDK_BACKEND=wayland
 # Configurações para NPU
 ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV CORAL_ENABLE_EDGETPU=1
+ENV NPU_AVAILABLE=1
 
 # Configurar permissões para usuário torizon (já existe na imagem base)
 RUN usermod -a -G video,audio,dialout,plugdev torizon

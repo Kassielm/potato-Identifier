@@ -44,7 +44,7 @@ deploy_remote() {
     # Executar na placa
     print_info "Executando na placa..."
     docker run --rm -it \
-        --device /dev/video0:/dev/video0 \
+        --device /dev/video2:/dev/video2 \
         --device /dev/video1:/dev/video1 \
         --privileged \
         --name potato-identifier \

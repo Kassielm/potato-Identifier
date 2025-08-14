@@ -1,0 +1,6 @@
+debugpy==1.8.14
+numpy<2.0
+opencv-python==4.8.1.78
+pypylon==4.2.0
+python-snap7==2.0.2
+tflite-runtime==2.14.0

@@ -138,7 +138,7 @@ docker exec potato-identifier-gui env | grep DISPLAY
 ## 📷 Configuração de Câmera
 
 ### Dispositivos Suportados
-- **USB Camera**: `/dev/video0`
+- **USB Camera**: `/dev/video2`
 - **CSI Camera**: Dependendo da configuração
 - **Basler**: Via GigE ou USB3
 
@@ -148,7 +148,7 @@ docker exec potato-identifier-gui env | grep DISPLAY
 v4l2-ctl --list-devices
 
 # Testar câmera
-ffmpeg -f v4l2 -i /dev/video0 -t 5 test.mp4
+ffmpeg -f v4l2 -i /dev/video2 -t 5 test.mp4
 ```
 
 ## 🔧 Configurações Avançadas

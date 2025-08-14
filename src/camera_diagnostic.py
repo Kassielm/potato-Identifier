@@ -46,7 +46,7 @@ def check_video_devices():
     logging.info("=== VERIFICAÇÃO DISPOSITIVOS DE VÍDEO ===")
     
     video_devices = []
-    for i in range(10):  # Verificar /dev/video0 até /dev/video9
+    for i in range(10):  # Verificar /dev/video2 até /dev/video9
         device_path = f"/dev/video{i}"
         if os.path.exists(device_path):
             video_devices.append(device_path)
