@@ -2,7 +2,7 @@ import cv2
 import logging
 import numpy as np
 import tflite_runtime.interpreter as tflite
-from plc import Plc # Supondo que seu arquivo plc.py está acessível
+# from plc import Plc # Supondo que seu arquivo plc.py está acessível
 
 # --- Configuração do Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -54,7 +54,7 @@ class VisionSystem:
         self.class_priority = {'PEDRA': 3, 'NOK': 2, 'OK': 1}
         self.class_values = {'OK': 0, 'NOK': 1, 'PEDRA': 2}
         self.window_name = 'Vision System'
-        self.plc = Plc()
+        # self.plc = Plc()
         self.camera = None # Agora será um objeto cv2.VideoCapture
 
         # --- Inicialização do Modelo TFLite ---
@@ -128,8 +128,8 @@ class VisionSystem:
             logger.error("Modelo não inicializado. Saindo do processamento.")
             return
             
-        if not self.plc.init_plc():
-            logger.error("Falha ao inicializar o PLC")
+        # if not self.plc.init_plc():
+        #     logger.error("Falha ao inicializar o PLC")
 
         while self.camera.isOpened():
             try:
@@ -196,14 +196,14 @@ class VisionSystem:
                         highest_priority = priority
                         highest_priority_class = label
 
-                # Escreve a classe de maior prioridade no PLC
-                if highest_priority_class:
-                    try:
-                        plc_data = self.class_values[highest_priority_class]
-                        self.plc.write_db(plc_data)
-                        logger.info(f"Escreveu a classe {highest_priority_class} (valor {plc_data}) para o PLC")
-                    except Exception as e:
-                        logger.error(f"Falha ao escrever no PLC: {e}")
+                # # Escreve a classe de maior prioridade no PLC
+                # if highest_priority_class:
+                #     try:
+                #         plc_data = self.class_values[highest_priority_class]
+                #         self.plc.write_db(plc_data)
+                #         logger.info(f"Escreveu a classe {highest_priority_class} (valor {plc_data}) para o PLC")
+                #     except Exception as e:
+                #         logger.error(f"Falha ao escrever no PLC: {e}")
 
                 # Exibe o frame final
                 cv2.imshow(self.window_name, frame_desenhado)
@@ -238,7 +238,7 @@ def main():
     
     # Caminho padrão para o delegate da NPU nos sistemas Torizon com i.MX 8M Plus
     # Deixe como None se não quiser usar a NPU
-    NPU_DELEGATE_PATH = "/usr/lib/libethosu_delegate.so"
+    NPU_DELEGATE_PATH = "/usr/lib/libvx_delegate.so"
 
     with VisionSystem(
         model_path='data/models/best_int8.tflite',
