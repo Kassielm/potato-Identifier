@@ -102,7 +102,10 @@ ENV GDK_BACKEND=wayland
 ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV CORAL_ENABLE_EDGETPU=1
 
-# Permissões para dispositivos
+# Configurar permissões para usuário torizon (já existe na imagem base)
+RUN usermod -a -G video,audio,dialout,plugdev torizon
+
+# Permissões para dispositivos (manter root também)
 RUN usermod -a -G video,audio,dialout,plugdev root
 
 # Script de entrada

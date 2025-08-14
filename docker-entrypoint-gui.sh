@@ -5,63 +5,62 @@ echo "🖥️  Configurando ambiente gráfico para Toradex..."
 
 # Aguardar o Weston estar pronto
 echo "⏳ Aguardando compositor Weston..."
-while [ ! -S /tmp/wayland-0 ]; do
+while [ ! -S /tmp/wayland-0 ] && [ ! -S /tmp/1000-runtime-dir/wayland-0 ]; do
     sleep 1
 done
 
-# Configurar permissões para dispositivos
-echo "🔧 Configurando permissões de dispositivos..."
-if [ -e /dev/dri ]; then
-    chmod 666 /dev/dri/*
+# Detectar localização do socket Wayland
+if [ -S /tmp/1000-runtime-dir/wayland-0 ]; then
+    echo "✅ Socket Wayland encontrado em /tmp/1000-runtime-dir/wayland-0"
+    export WAYLAND_DISPLAY=wayland-0
+    export XDG_RUNTIME_DIR=/tmp/1000-runtime-dir
+elif [ -S /tmp/wayland-0 ]; then
+    echo "✅ Socket Wayland encontrado em /tmp/wayland-0"
+    export WAYLAND_DISPLAY=wayland-0
 fi
 
-if [ -e /dev/galcore ]; then
-    chmod 666 /dev/galcore
-fi
+# Configurar permissões de câmera (com privilégios root)
+echo "📷 Configurando permissões de câmera..."
+chmod 666 /dev/video* 2>/dev/null || true
 
-# Configurar acesso à câmera
-echo "📷 Configurando acesso à câmera..."
+# Verificar câmeras após configurar permissões
+echo "📷 Verificando acesso à câmera..."
 for i in /dev/video*; do
     if [ -e "$i" ]; then
-        chmod 666 "$i"
-        echo "   Configurado: $i"
+        echo "   ✅ Câmera detectada: $i ($(ls -la $i | awk '{print $1, $3, $4}'))"
     fi
 done
+
+# Configurar GPU permissions
+echo "🔧 Configurando permissões GPU..."
+chmod 666 /dev/dri/* 2>/dev/null || true
+chmod 666 /dev/galcore 2>/dev/null || true
 
 # Verificar NPU
 echo "🧠 Verificando disponibilidade da NPU..."
 if [ -e /dev/vipnpu* ]; then
-    chmod 666 /dev/vipnpu*
-    echo "   ✅ NPU detectada e configurada"
     export NPU_AVAILABLE=1
+    echo "   ✅ NPU detectada"
 else
-    echo "   ⚠️  NPU não detectada"
     export NPU_AVAILABLE=0
+    echo "   ⚠️  NPU não detectada"
 fi
 
 # Configurar variáveis de ambiente para GUI
 export DISPLAY=:0
-export WAYLAND_DISPLAY=wayland-0
-export XDG_RUNTIME_DIR=/tmp
-export XDG_SESSION_TYPE=wayland
+export GUI_AVAILABLE=1
+export HEADLESS=0
 
-# Verificar se está em ambiente gráfico
-if [ -S /tmp/wayland-0 ]; then
-    echo "✅ Compositor Wayland detectado"
-    export GUI_AVAILABLE=1
-else
-    echo "⚠️  Ambiente gráfico não detectado - executando em modo headless"
-    export HEADLESS=1
-    export GUI_AVAILABLE=0
-fi
+echo "✅ Compositor Wayland detectado em $(find /tmp -name "wayland-*" -type s 2>/dev/null | head -1)"
 
-# Log de configuração
 echo "📊 Configuração do ambiente:"
 echo "   DISPLAY: $DISPLAY"
 echo "   WAYLAND_DISPLAY: $WAYLAND_DISPLAY"
 echo "   GUI_AVAILABLE: $GUI_AVAILABLE"
 echo "   NPU_AVAILABLE: $NPU_AVAILABLE"
-echo "   HEADLESS: ${HEADLESS:-0}"
+echo "   HEADLESS: $HEADLESS"
 
 echo "🚀 Iniciando aplicação Potato Identifier..."
-exec "$@"
+
+# Executar a aplicação
+exec python3 /app/src/main.py "$@"

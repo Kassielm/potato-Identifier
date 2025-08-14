@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   potato-identifier-gui:
     build:
@@ -14,7 +12,7 @@ services:
     environment:
       - DISPLAY=:0
       - WAYLAND_DISPLAY=wayland-0
-      - XDG_RUNTIME_DIR=/tmp
+      - XDG_RUNTIME_DIR=/tmp/1000-runtime-dir
       - XDG_SESSION_TYPE=wayland
       - QT_QPA_PLATFORM=wayland
       - GDK_BACKEND=wayland
@@ -36,8 +34,9 @@ services:
     env_file:
       - ./config/imx8mp-npu.env
     
-    # Acesso a dispositivos e recursos do sistema
+    # Acesso total necessário para configurar permissões
     privileged: true
+    user: "root"  # Mudamos para root temporariamente para configurar permissões
     
     # Volumes para GUI e dispositivos
     volumes:
@@ -107,3 +106,21 @@ services:
     labels:
       - "torizon.compositor=weston"
       - "torizon.platform=imx8mp"
+
+  # Serviço para configurar permissões
+  camera-setup:
+    image: alpine:latest
+    container_name: camera-setup
+    privileged: true
+    volumes:
+      - /dev:/dev:rw
+    command: >
+      sh -c "
+        echo 'Configurando permissões de câmera...' &&
+        chmod 666 /dev/video* 2>/dev/null || true &&
+        echo 'Permissões configuradas!' &&
+        sleep infinity
+      "
+    restart: unless-stopped
+    labels:
+      - "torizon.utility=camera-permissions"
