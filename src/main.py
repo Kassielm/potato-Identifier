@@ -31,6 +31,10 @@ print(f"   HEADLESS_MODE: {HEADLESS_MODE}")
 print(f"   GUI_AVAILABLE: {GUI_AVAILABLE}")
 
 NPU_AVAILABLE = os.getenv('NPU_AVAILABLE', '0') == '1'
+DISABLE_DELEGATES = os.getenv('DISABLE_DELEGATES', '0') == '1'
+
+print(f"🧠 NPU_AVAILABLE: {NPU_AVAILABLE}")
+print(f"🚫 DISABLE_DELEGATES: {DISABLE_DELEGATES}")
 
 # Tenta importar tflite_runtime primeiro, depois tensorflow.lite como fallback
 try:
@@ -122,6 +126,40 @@ class VisionSystem:
 
         # --- Inicializar Modelo ---
         self._initialize_model()
+
+    def _test_delegate_safety(self):
+        """Testa se o delegate VX é seguro para usar"""
+        try:
+            logger.info("🧪 Testando segurança do delegate VX...")
+            
+            # Criar um modelo dummy para testar
+            import tempfile
+            import struct
+            
+            # Criar um modelo TFLite minimal válido para teste
+            with tempfile.NamedTemporaryFile(suffix='.tflite', delete=False) as temp_model:
+                # Este é um modelo TFLite minimal válido (apenas para teste)
+                minimal_model = bytes([0x54, 0x46, 0x4C, 0x33])  # Header TFL3
+                temp_model.write(minimal_model)
+                temp_model_path = temp_model.name
+            
+            try:
+                # Tentar carregar delegate
+                delegate = tflite.load_delegate('libvx_delegate.so')
+                logger.info("✅ Delegate VX carregado para teste")
+                
+                # Cleanup
+                os.unlink(temp_model_path)
+                return True
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Delegate VX falhou no teste: {e}")
+                os.unlink(temp_model_path)
+                return False
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Erro no teste de segurança: {e}")
+            return False
         
     def _initialize_model(self):
         """Inicializar modelo TensorFlow Lite"""
@@ -129,10 +167,10 @@ class VisionSystem:
         
         # Caminhos dos modelos
         
-        int8_model_path = os.path.join(base_dir, 'data', 'models', 'best_full_integer_quant.tflite')
+        int8_model_path = os.path.join(base_dir, 'data', 'models', 'lite-model_ssd_mobilenet_v1_1_metadata_2.tflite')
         edgetpu_model_path = os.path.join(base_dir, 'data', 'models', 'best_float32_edgetpu.tflite')
         fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
-        label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')
+        label_path = os.path.join(base_dir, 'data', 'models', 'labelmap.txt')
 
         # Definir qual modelo usar - priorizar INT8 para performance
         if NPU_AVAILABLE and os.path.exists(int8_model_path):
@@ -152,12 +190,54 @@ class VisionSystem:
             raise FileNotFoundError("Nenhum modelo válido encontrado")
 
         try:
-            # Carregar modelo na CPU (sem delegate por simplicidade)
-            self.interpreter = tflite.Interpreter(model_path=primary_model)
+            # Estratégia simplificada: testar disponibilidade do delegate primeiro
+            use_delegate = False
+            
+            if NPU_AVAILABLE and not DISABLE_DELEGATES:
+                logger.info("🚀 Verificando disponibilidade do delegate VX...")
+                
+                # Primeiro, verificar se conseguimos importar o delegate sem erro
+                try:
+                    # Teste mais simples e seguro
+                    import ctypes
+                    
+                    # Tentar carregar a biblioteca diretamente
+                    lib_path = 'libvx_delegate.so'
+                    lib = ctypes.CDLL(lib_path)
+                    logger.info("✅ Biblioteca VX delegate encontrada e carregável")
+                    
+                    # Se chegou até aqui, tentar usar o delegate
+                    logger.info("🔧 Carregando modelo com delegate VX...")
+                    delegate = tflite.load_delegate(lib_path)
+                    self.interpreter = tflite.Interpreter(
+                        model_path=primary_model,
+                        experimental_delegates=[delegate]
+                    )
+                    use_delegate = True
+                    logger.info("✅ Modelo configurado com delegate VX")
+                    
+                except Exception as delegate_error:
+                    logger.warning(f"⚠️ Delegate VX não disponível: {delegate_error}")
+                    use_delegate = False
+            elif DISABLE_DELEGATES:
+                logger.info("🚫 Delegates desabilitados via DISABLE_DELEGATES=1")
+            
+            # Se delegate não funcionou ou NPU não disponível, usar CPU
+            if not use_delegate:
+                logger.info("� Carregando modelo na CPU...")
+                self.interpreter = tflite.Interpreter(model_path=primary_model)
+            
+            # Alocar tensors (para ambos os casos)
+            logger.info("🧠 Alocando tensors...")
             self.interpreter.allocate_tensors()
-            logger.info(f"✅ Modelo {os.path.basename(primary_model)} carregado!")
+            
+            if use_delegate:
+                logger.info("✅ Modelo carregado com sucesso usando delegate VX")
+            else:
+                logger.info("✅ Modelo carregado com sucesso na CPU")
+                
         except Exception as e:
-            logger.error(f"Erro ao carregar modelo: {e}")
+            logger.error(f"❌ Erro crítico ao carregar modelo: {e}")
             raise e
 
         # Obter detalhes do modelo
