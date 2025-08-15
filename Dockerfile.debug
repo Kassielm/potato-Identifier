@@ -40,10 +40,20 @@ EXPOSE 6512
 # Make sure we don't get notifications we can't answer during building.
 ENV DEBIAN_FRONTEND="noninteractive"
 
+# Configure apt to handle repository issues
+RUN echo 'APT::Get::Assume-Yes "true";' >> /etc/apt/apt.conf.d/90assumeyes && \
+    echo 'APT::Get::Fix-Broken "true";' >> /etc/apt/apt.conf.d/90fixbroken && \
+    echo 'APT::Install-Recommends "false";' >> /etc/apt/apt.conf.d/90norecommends
+
+# Update package lists with error handling
+RUN apt update --fix-missing -q -y || apt update -q -y
+
 # your regular RUN statements here
 # Install required packages
-RUN apt-get -q -y update && \
-    apt-get -q -y install \
+RUN apt install -q -y \
+    ca-certificates \
+    apt-transport-https \
+    && apt install -q -y \
     openssl \
     openssh-server \
     rsync \
@@ -53,18 +63,18 @@ RUN apt-get -q -y update && \
     python3-pip \
     python3-setuptools \
     python3-venv \
-    && apt-get clean && apt-get autoremove && \
+    && apt clean && apt autoremove && \
     rm -rf /var/lib/apt/lists/*
 
 # automate for torizonPackages.json
-RUN apt-get -q -y update && \
-    apt-get -q -y install \
+RUN apt update -q -y && \
+    apt install -q -y \
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     # __torizon_packages_dev_start__
     # __torizon_packages_dev_end__
 # DO NOT REMOVE THIS LABEL: this is used for VS Code automation
     && \
-    apt-get clean && apt-get autoremove && \
+    apt clean && apt autoremove && \
     rm -rf /var/lib/apt/lists/*
 
 # Create virtualenv

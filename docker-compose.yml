@@ -14,12 +14,11 @@ services:
     environment:
       - "DISPLAY=:0"
       - "QT_QPA_PLATFORM=wayland"
-      - "QT_PLUGIN_PATH=/usr/lib/aarch64-linux-gnu/qt5/plugins"
       - "WAYLAND_DISPLAY=wayland-1"
       - "XDG_RUNTIME_DIR=/run/user/1000"
-      - "LD_LIBRARY_PATH=/opt/pylon/lib"
+      - "LD_LIBRARY_PATH=/opt/pylon/lib:/usr/lib"
     volumes:
       - "/tmp/.X11-unix:/tmp/.X11-unix:rw"
       - "/run/user/1000:/run/user/1000:rw"
-      - /dev:/dev
-      - /opt/pylon_drivers:/opt/pylon
+      - "/dev:/dev"
+      - "/opt/pylon_drivers:/opt/pylon"
