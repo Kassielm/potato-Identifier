@@ -80,6 +80,9 @@ export XDG_SESSION_TYPE=wayland
 export GUI_AVAILABLE=1
 export HEADLESS=0
 
+# Configurar modo de exibição da janela (1=tela cheia, 0=centralizada)
+export FULLSCREEN_MODE=${FULLSCREEN_MODE:-1}
+
 # Configurações específicas para OpenCV funcionar com Wayland/XCB
 export QT_XCB_GL_INTEGRATION=none
 export QT_LOGGING_RULES="*.debug=false"

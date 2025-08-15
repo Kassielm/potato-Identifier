@@ -85,7 +85,7 @@ class VisionSystem:
         self.use_opencv_gui = not self.headless and GUI_AVAILABLE
         
         # Variáveis para OpenCV GUI
-        self.window_name = "Potato Identifier - Vision System"
+        self.window_name = "Conecsa - Vision System"
         self.should_quit = False
 
         logger.info("Iniciando a inicialização do VisionSystem...")
@@ -211,7 +211,19 @@ class VisionSystem:
                         # Configurar janela se GUI disponível
                         if self.use_opencv_gui:
                             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-                            cv2.resizeWindow(self.window_name, 800, 600)
+                            
+                            # Verificar modo de exibição da janela
+                            fullscreen_mode = os.getenv('FULLSCREEN_MODE', '1') == '1'
+                            
+                            if fullscreen_mode:
+                                # Modo tela cheia
+                                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                                logger.info("🖥️  Janela configurada para TELA CHEIA")
+                            else:
+                                # Modo janela centralizada
+                                cv2.resizeWindow(self.window_name, 1024, 768)
+                                cv2.moveWindow(self.window_name, 100, 50)
+                                logger.info("🖥️  Janela configurada para modo CENTRALIZADO (1024x768)")
                         
                         return True
                     else:
