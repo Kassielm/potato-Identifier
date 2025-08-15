@@ -12,12 +12,14 @@ HEADLESS_MODE = os.environ.get('HEADLESS', 'false').lower() == 'true'
 wayland_display = os.getenv('WAYLAND_DISPLAY', '')
 x11_display = os.getenv('DISPLAY', '')
 gui_available_env = os.getenv('GUI_AVAILABLE', '1')
+headless_env = os.getenv('HEADLESS', '0')
 
 # Detectar se há interface gráfica disponível
+# Priorizar variável de ambiente explícita, depois verificar displays disponíveis
 HEADLESS_MODE = (
-    os.getenv('HEADLESS', '0') == '1' or
-    (not wayland_display and not x11_display) or
-    gui_available_env == '0'
+    headless_env == '1' or
+    (gui_available_env == '0') or
+    (not wayland_display and not x11_display and gui_available_env != '1')
 )
 
 GUI_AVAILABLE = gui_available_env == '1' and not HEADLESS_MODE
@@ -78,7 +80,8 @@ def supressao_nao_maxima(boxes, scores, iou_threshold):
 class VisionSystem:
     def __init__(self, root=None):
         self.root = root
-        self.headless = HEADLESS_MODE or root is None
+        # Para OpenCV puro, não depender do parâmetro root para determinar GUI
+        self.headless = HEADLESS_MODE
         self.use_opencv_gui = not self.headless and GUI_AVAILABLE
         
         # Variáveis para OpenCV GUI
@@ -130,13 +133,16 @@ class VisionSystem:
         fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
         label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')
 
-        # Definir qual modelo usar
-        if os.path.exists(fallback_model):
-            primary_model = fallback_model
-            logger.info("💻 Modelo float32 encontrado")
+        # Definir qual modelo usar - priorizar INT8 para performance
+        if NPU_AVAILABLE and os.path.exists(int8_model_path):
+            primary_model = int8_model_path
+            logger.info("🧠 NPU disponível - usando modelo INT8 quantizado")
         elif os.path.exists(int8_model_path):
             primary_model = int8_model_path
-            logger.info("📊 Modelo INT8 quantizado encontrado")
+            logger.info("📊 Modelo INT8 quantizado encontrado - melhor performance")
+        elif os.path.exists(fallback_model):
+            primary_model = fallback_model
+            logger.info("💻 Modelo float32 encontrado")
         elif os.path.exists(edgetpu_model_path):
             primary_model = edgetpu_model_path
             logger.info("🔸 Modelo EdgeTPU encontrado")

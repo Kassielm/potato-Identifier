@@ -72,15 +72,19 @@ else
 fi
 
 # Configurar variáveis de ambiente para GUI
-# Para OpenCV GUI, focar em Wayland sem X11
+# OpenCV precisa de XCB para Qt, mas mantemos Wayland para outros componentes
 export GDK_BACKEND=wayland
-export QT_QPA_PLATFORM=wayland
+export QT_QPA_PLATFORM=xcb
 export SDL_VIDEODRIVER=wayland
 export XDG_SESSION_TYPE=wayland
 export GUI_AVAILABLE=1
 export HEADLESS=0
 
-echo "✅ OpenCV GUI configurado para Wayland"
+# Configurações específicas para OpenCV funcionar com Wayland/XCB
+export QT_XCB_GL_INTEGRATION=none
+export QT_LOGGING_RULES="*.debug=false"
+
+echo "✅ OpenCV GUI configurado para XCB/Wayland"
 
 echo "📊 Configuração do ambiente:"
 echo "   XDG_RUNTIME_DIR: $XDG_RUNTIME_DIR"

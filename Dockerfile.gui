@@ -11,9 +11,16 @@ ARG NPU="true"
 # Instalar pacotes do sistema
 RUN apt-get -q -y update && \
     apt-get -q -y install --no-install-recommends \
-        python3-full \
+        python3-minimal \
         python3-pip \
         python3-dev \
+        python3-venv \
+        libgl1 \
+        libglib2.0-0 \
+        libxext6 \
+        libxrender1 \
+        libxcb-xinerama0 \
+        libxcb-cursor0 \
         python3-setuptools \
         python3-wheel \
         python3-tk \
@@ -62,6 +69,7 @@ RUN apt-get -q -y update && \
         file \
         binutils \
         # Pacotes para câmera V4L2
+        usbutils \
         v4l-utils \
         libv4l-dev && \
     rm -rf /var/lib/apt/lists/*
@@ -109,7 +117,7 @@ RUN chmod +x /tmp/install_delegates.sh && \
 
 # Configurar variáveis de ambiente para GUI
 ENV DISPLAY=:0
-ENV WAYLAND_DISPLAY=wayland-0
+ENV WAYLAND_DISPLAY=wayland-1
 ENV XDG_RUNTIME_DIR=/tmp
 ENV XDG_SESSION_TYPE=wayland
 ENV QT_QPA_PLATFORM=wayland

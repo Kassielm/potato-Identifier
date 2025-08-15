@@ -8,6 +8,9 @@ services:
     
     # Configurações de ambiente
     environment:
+      - DISPLAY=:0
+      - CAPTURE_DEVICE=/dev/video2
+      - USE_HW_ACCELERATED_INFERENCE=1
       - WAYLAND_DISPLAY=wayland-0
       - XDG_RUNTIME_DIR=/tmp/1000-runtime-dir
       - XDG_SESSION_TYPE=wayland
@@ -49,8 +52,9 @@ services:
     # Acesso à rede do host para PLC
     network_mode: host
     
-    # Recursos de hardware específicos do iMX8MP
+    # Recursos de hardware específicos do iMX8MP e câmera USB
     devices:
+      - /dev/bus/usb:/dev/bus/usb:rw         # Acesso USB para câmeras
       - /dev/dri:/dev/dri                    # GPU Vivante
       - /dev/galcore:/dev/galcore            # Galcore GPU driver
       - /dev/video2:/dev/video2              # Câmera principal
