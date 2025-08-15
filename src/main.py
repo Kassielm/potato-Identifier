@@ -128,7 +128,8 @@ class VisionSystem:
         logger.info("🧠 Carregando modelo TensorFlow Lite...")
         
         # Caminhos dos modelos
-        int8_model_path = os.path.join(base_dir, 'data', 'models', 'best_int8.tflite')
+        
+        int8_model_path = os.path.join(base_dir, 'data', 'models', 'best_full_integer_quant.tflite')
         edgetpu_model_path = os.path.join(base_dir, 'data', 'models', 'best_float32_edgetpu.tflite')
         fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
         label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')
@@ -246,12 +247,12 @@ class VisionSystem:
             return
             
         # Tentar conectar ao PLC se disponível
-        if self.plc:
-            plc_status = self.plc.init_plc()
-            if plc_status:
-                logger.info("Sistema iniciado com câmera e PLC")
-            else:
-                logger.warning("Sistema iniciado apenas com câmera - PLC indisponível")
+        # if self.plc:
+        #     plc_status = self.plc.init_plc()
+        #     if plc_status:
+        #         logger.info("Sistema iniciado com câmera e PLC")
+        #     else:
+        #         logger.warning("Sistema iniciado apenas com câmera - PLC indisponível")
 
         logger.info("Iniciando loop da câmera...")
         
@@ -329,30 +330,30 @@ class VisionSystem:
                 cv2.putText(frame_desenhado, perf_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
                 # --- 6. Enviar para PLC com resiliência ---
-                if self.plc:
-                    if highest_priority_class:
-                        # Há detecção - enviar valor da classe detectada
-                        plc_data = self.class_values[highest_priority_class]
-                        success = self.plc.write_db(plc_data)
-                        if success:
-                            logger.debug(f"✅ Enviado para PLC: {highest_priority_class} ({plc_data})")
-                        else:
-                            logger.debug(f"⚠️ PLC indisponível - valor não enviado: {highest_priority_class} ({plc_data})")
-                    else:
-                        # Não há detecção - enviar "OK" (0)
-                        plc_data = self.class_values['OK']  # 0
-                        success = self.plc.write_db(plc_data)
-                        if success:
-                            logger.debug(f"✅ Enviado para PLC: OK (sem detecções) ({plc_data})")
-                        else:
-                            logger.debug(f"⚠️ PLC indisponível - valor OK não enviado ({plc_data})")
-                else:
-                    # PLC não disponível
-                    if highest_priority_class:
-                        plc_data = self.class_values[highest_priority_class]
-                        logger.debug(f"⚠️ PLC não inicializado - valor não enviado: {highest_priority_class} ({plc_data})")
-                    else:
-                        logger.debug(f"⚠️ PLC não inicializado - valor OK não enviado")
+                # if self.plc:
+                #     if highest_priority_class:
+                #         # Há detecção - enviar valor da classe detectada
+                #         plc_data = self.class_values[highest_priority_class]
+                #         success = self.plc.write_db(plc_data)
+                #         if success:
+                #             logger.debug(f"✅ Enviado para PLC: {highest_priority_class} ({plc_data})")
+                #         else:
+                #             logger.debug(f"⚠️ PLC indisponível - valor não enviado: {highest_priority_class} ({plc_data})")
+                #     else:
+                #         # Não há detecção - enviar "OK" (0)
+                #         plc_data = self.class_values['OK']  # 0
+                #         success = self.plc.write_db(plc_data)
+                #         if success:
+                #             logger.debug(f"✅ Enviado para PLC: OK (sem detecções) ({plc_data})")
+                #         else:
+                #             logger.debug(f"⚠️ PLC indisponível - valor OK não enviado ({plc_data})")
+                # else:
+                #     # PLC não disponível
+                #     if highest_priority_class:
+                #         plc_data = self.class_values[highest_priority_class]
+                #         logger.debug(f"⚠️ PLC não inicializado - valor não enviado: {highest_priority_class} ({plc_data})")
+                #     else:
+                #         logger.debug(f"⚠️ PLC não inicializado - valor OK não enviado")
 
                 # --- 7. Exibir Frame ---
                 if self.use_opencv_gui and not self.headless:
@@ -365,9 +366,9 @@ class VisionSystem:
                         logger.info("Usuário solicitou fechamento da aplicação")
                         self.should_quit = True
                         break
-                else:
-                    # Modo headless - pausa pequena para não sobrecarregar CPU
-                    time.sleep(0.01)
+                # else:
+                #     # Modo headless - pausa pequena para não sobrecarregar CPU
+                #     # time.sleep(0.01)
 
             except Exception as e:
                 logger.error(f"Erro no loop de processamento: {e}")
@@ -403,12 +404,12 @@ class VisionSystem:
         except Exception as e:
             logger.error(f"Erro ao fechar câmera: {e}")
         
-        try:
-            if hasattr(self, 'plc') and self.plc:
-                self.plc.disconnect()
-                logger.info("Conexão PLC encerrada.")
-        except Exception as e:
-            logger.error(f"Erro ao desconectar PLC: {e}")
+        # try:
+        #     if hasattr(self, 'plc') and self.plc:
+        #         self.plc.disconnect()
+        #         logger.info("Conexão PLC encerrada.")
+        # except Exception as e:
+        #     logger.error(f"Erro ao desconectar PLC: {e}")
         
         try:
             cv2.destroyAllWindows()
