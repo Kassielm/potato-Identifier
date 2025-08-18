@@ -5,8 +5,8 @@ opencv-python==4.8.1.78
 python-snap7==2.0.2
 Pillow>=10.0.0
 
-# TensorFlow Lite (will be installed from Google Coral repo)
-# tflite-runtime
+# TensorFlow Lite
+tflite-runtime==2.14.0
 
 # EdgeTPU support (will be installed from Google Coral repo)  
 # pycoral

@@ -129,7 +129,7 @@ class VisionSystem:
         
         # Caminhos dos modelos
         
-        int8_model_path = os.path.join(base_dir, 'data', 'models', 'best_full_integer_quant.tflite')
+        int8_model_path = os.path.join(base_dir, 'data', 'models', 'best_int8_potato.tflite')
         edgetpu_model_path = os.path.join(base_dir, 'data', 'models', 'best_float32_edgetpu.tflite')
         fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
         label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')

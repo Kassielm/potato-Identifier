@@ -173,7 +173,7 @@ deploy_gui() {
     
     print_info "Fazendo deploy com docker compose..."
     # Executar docker compose na placa remota
-    docker compose -f docker-compose.gui.yml up -d
+    docker compose -f docker-compose.gui.yml up -d --no-cache
     
     print_success "Deploy GUI concluído!"
     print_info "📊 Para ver logs: docker logs -f potato-identifier-gui"
