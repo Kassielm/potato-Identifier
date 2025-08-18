@@ -129,10 +129,10 @@ class VisionSystem:
         
         # Caminhos dos modelos
         
-        int8_model_path = os.path.join(base_dir, 'data', 'models', 'best_int8_potato.tflite')
+        int8_model_path = os.path.join(base_dir, 'data', 'models', 'lite-model_ssd_mobilenet_v1_1_metadata_2.tflite')
         edgetpu_model_path = os.path.join(base_dir, 'data', 'models', 'best_float32_edgetpu.tflite')
         fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
-        label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')
+        label_path = os.path.join(base_dir, 'data', 'models', 'labelmap.txt')
 
         # Definir qual modelo usar - priorizar INT8 para performance
         if NPU_AVAILABLE and os.path.exists(int8_model_path):
