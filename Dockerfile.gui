@@ -59,7 +59,10 @@ FROM base AS final
 
 # Copy artefacts built in tflite-build
 COPY --from=tflite-build /usr/lib/ /usr/lib/
+
 COPY --from=tflite-build /usr/include/ /usr/include/
+RUN apt-get -y update && apt-get install -y \
+    libovxlib
 
 # Create virtualenv and install Python deps
 RUN python3 -m venv /opt/venv

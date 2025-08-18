@@ -24,13 +24,17 @@ HEADLESS_MODE = (
 
 GUI_AVAILABLE = gui_available_env == '1' and not HEADLESS_MODE
 
+NPU_AVAILABLE = os.getenv('NPU_AVAILABLE', '0') == '1'
+
 print(f"🖥️  Display status:")
 print(f"   WAYLAND_DISPLAY: '{wayland_display}'")
 print(f"   DISPLAY: '{x11_display}'")
 print(f"   HEADLESS_MODE: {HEADLESS_MODE}")
 print(f"   GUI_AVAILABLE: {GUI_AVAILABLE}")
 
-NPU_AVAILABLE = os.getenv('NPU_AVAILABLE', '0') == '1'
+# --- Configuração do Logging ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Tenta importar tflite_runtime primeiro, depois tensorflow.lite como fallback
 try:
@@ -41,15 +45,28 @@ except ImportError:
     tflite = tf_full.lite
     USING_TFLITE_RUNTIME = False
 
+# Importar delegates para NPU
+try:
+    from tflite_runtime.interpreter import load_delegate
+    DELEGATES_AVAILABLE = True
+except ImportError:
+    try:
+        from tensorflow.lite.python.interpreter import load_delegate
+        DELEGATES_AVAILABLE = True
+    except ImportError:
+        DELEGATES_AVAILABLE = False
+        logger.warning("Delegates não disponíveis - rodando apenas em CPU")
+
+print(f"🧠 NPU status:")
+print(f"   NPU_AVAILABLE: {NPU_AVAILABLE}")
+print(f"   DELEGATES_AVAILABLE: {DELEGATES_AVAILABLE}")
+print(f"   USING_TFLITE_RUNTIME: {USING_TFLITE_RUNTIME}")
+
 from plc import Plc
 
 # --- Lógica de Caminhos Absolutos ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
 base_dir = os.path.dirname(script_dir)
-
-# --- Configuração do Logging ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 def supressao_nao_maxima(boxes, scores, iou_threshold):
     """Aplica Supressão Não-Máxima (NMS) para remover caixas sobrepostas."""
@@ -124,49 +141,81 @@ class VisionSystem:
         self._initialize_model()
         
     def _initialize_model(self):
-        """Inicializar modelo TensorFlow Lite"""
+        """Inicializar modelo TensorFlow Lite com suporte NPU"""
         logger.info("🧠 Carregando modelo TensorFlow Lite...")
         
         # Caminhos dos modelos
-        
-        int8_model_path = os.path.join(base_dir, 'data', 'models', 'lite-model_ssd_mobilenet_v1_1_metadata_2.tflite')
-        edgetpu_model_path = os.path.join(base_dir, 'data', 'models', 'best_float32_edgetpu.tflite')
+        ssd_model_path = os.path.join(base_dir, 'data', 'models', 'lite-model_ssd_mobilenet_v1_1_metadata_2.tflite')
         fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
         label_path = os.path.join(base_dir, 'data', 'models', 'labelmap.txt')
 
-        # Definir qual modelo usar - priorizar INT8 para performance
-        if NPU_AVAILABLE and os.path.exists(int8_model_path):
-            primary_model = int8_model_path
-            logger.info("🧠 NPU disponível - usando modelo INT8 quantizado")
-        elif os.path.exists(int8_model_path):
-            primary_model = int8_model_path
-            logger.info("📊 Modelo INT8 quantizado encontrado - melhor performance")
+        # Priorizar modelo SSD MobileNet
+        if os.path.exists(ssd_model_path):
+            primary_model = ssd_model_path
+            logger.info("🧠 Usando modelo SSD MobileNet v1")
         elif os.path.exists(fallback_model):
             primary_model = fallback_model
-            logger.info("💻 Modelo float32 encontrado")
-        elif os.path.exists(edgetpu_model_path):
-            primary_model = edgetpu_model_path
-            logger.info("🔸 Modelo EdgeTPU encontrado")
+            logger.info("� Modelo float32 encontrado como fallback")
         else:
             logger.error("❌ Nenhum modelo encontrado!")
             raise FileNotFoundError("Nenhum modelo válido encontrado")
 
+        # Configurar delegates para NPU
+        delegates = []
+        
+        if NPU_AVAILABLE and DELEGATES_AVAILABLE:
+            try:
+                # Tentar carregar delegate NPU (VX)
+                vx_delegate_path = "/usr/lib/libvx_delegate.so"
+                if os.path.exists(vx_delegate_path):
+                    vx_delegate = load_delegate(vx_delegate_path)
+                    delegates.append(vx_delegate)
+                    logger.info("✅ NPU VX Delegate carregado")
+                else:
+                    logger.warning("⚠️ VX Delegate não encontrado em /usr/lib/libvx_delegate.so")
+                
+                # Tentar carregar delegate NNAPI como fallback
+                try:
+                    nnapi_delegate = load_delegate('libnnapi_delegate.so')
+                    delegates.append(nnapi_delegate)
+                    logger.info("✅ NNAPI Delegate carregado como fallback")
+                except:
+                    logger.info("ℹ️ NNAPI Delegate não disponível")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao carregar delegates NPU: {e}")
+
         try:
-            # Carregar modelo na CPU (sem delegate por simplicidade)
-            self.interpreter = tflite.Interpreter(model_path=primary_model)
+            # Carregar modelo com delegates se disponíveis
+            if delegates:
+                self.interpreter = tflite.Interpreter(
+                    model_path=primary_model,
+                    experimental_delegates=delegates
+                )
+                logger.info(f"✅ Modelo carregado com {len(delegates)} delegate(s)")
+            else:
+                self.interpreter = tflite.Interpreter(model_path=primary_model)
+                logger.info("✅ Modelo carregado em CPU")
+                
             self.interpreter.allocate_tensors()
             logger.info(f"✅ Modelo {os.path.basename(primary_model)} carregado!")
+            
         except Exception as e:
             logger.error(f"Erro ao carregar modelo: {e}")
             raise e
 
         # Obter detalhes do modelo
         self.input_details = self.interpreter.get_input_details()[0]
-        self.output_details = self.interpreter.get_output_details()[0]
+        self.output_details = self.interpreter.get_output_details()
         self.input_height = self.input_details['shape'][1]
         self.input_width = self.input_details['shape'][2]
         
         logger.info(f"Tamanho de entrada do modelo: {self.input_width}x{self.input_height}")
+        logger.info(f"Número de saídas: {len(self.output_details)}")
+        
+        # Log detalhes das saídas para SSD MobileNet
+        for i, output in enumerate(self.output_details):
+            logger.info(f"Saída {i}: shape={output['shape']}, dtype={output['dtype']}")
 
         # Carregar labels
         if os.path.exists(label_path):
@@ -282,29 +331,65 @@ class VisionSystem:
                 self.interpreter.invoke()
                 inference_time = time.time() - start_time
                 
-                output = self.interpreter.get_tensor(self.output_details['index'])
-                output_transposed = output.transpose(0, 2, 1)[0]
-
-                # --- 3. Pós-processamento ---
-                boxes, scores, class_ids = [], [], []
-                for row in output_transposed:
-                    confidence = np.max(row[4:])
-                    if confidence > self.CONFIDENCE_THRESHOLD:
-                        class_id = np.argmax(row[4:])
-                        scores.append(confidence)
-                        class_ids.append(class_id)
-                        
-                        cx, cy, w, h = row[:4]
-                        x1 = int((cx - w / 2) * frame_w)
-                        y1 = int((cy - h / 2) * frame_h)
-                        x2 = int((cx + w / 2) * frame_w)
-                        y2 = int((cy + h / 2) * frame_h)
-                        boxes.append([x1, y1, x2, y2])
+                # --- 3. Pós-processamento para SSD MobileNet ---
+                # SSD MobileNet tem 4 saídas:
+                # 0: locations/boxes [1, 10, 4] - coordenadas das bounding boxes
+                # 1: classes [1, 10] - IDs das classes detectadas  
+                # 2: scores [1, 10] - scores de confiança
+                # 3: num_detections [1] - número de detecções válidas
                 
-                # --- 4. Aplicar NMS ---
-                indices_finais = supressao_nao_maxima(np.array(boxes), np.array(scores), self.IOU_THRESHOLD)
+                if len(self.output_details) >= 4:
+                    # Modelo SSD MobileNet com 4 saídas
+                    boxes_output = self.interpreter.get_tensor(self.output_details[0]['index'])[0]  # [10, 4]
+                    classes_output = self.interpreter.get_tensor(self.output_details[1]['index'])[0]  # [10]
+                    scores_output = self.interpreter.get_tensor(self.output_details[2]['index'])[0]  # [10]
+                    num_detections = int(self.interpreter.get_tensor(self.output_details[3]['index'])[0])
+                    
+                    # Processar detecções
+                    boxes, scores, class_ids = [], [], []
+                    
+                    for i in range(min(num_detections, len(scores_output))):
+                        score = scores_output[i]
+                        if score > self.CONFIDENCE_THRESHOLD:
+                            # Converter coordenadas normalizadas para pixels
+                            # SSD MobileNet retorna [y1, x1, y2, x2] normalizado
+                            y1, x1, y2, x2 = boxes_output[i]
+                            x1 = int(x1 * frame_w)
+                            y1 = int(y1 * frame_h)
+                            x2 = int(x2 * frame_w)
+                            y2 = int(y2 * frame_h)
+                            
+                            boxes.append([x1, y1, x2, y2])
+                            scores.append(score)
+                            class_ids.append(int(classes_output[i]))
+                    
+                    # Para SSD MobileNet, NMS já está aplicado internamente
+                    indices_finais = list(range(len(boxes)))
+                    
+                else:
+                    # Fallback para outros modelos (YOLO style)
+                    output = self.interpreter.get_tensor(self.output_details[0]['index'])
+                    output_transposed = output.transpose(0, 2, 1)[0]
 
-                # --- 5. Processar e Desenhar Resultados ---
+                    boxes, scores, class_ids = [], [], []
+                    for row in output_transposed:
+                        confidence = np.max(row[4:])
+                        if confidence > self.CONFIDENCE_THRESHOLD:
+                            class_id = np.argmax(row[4:])
+                            scores.append(confidence)
+                            class_ids.append(class_id)
+                            
+                            cx, cy, w, h = row[:4]
+                            x1 = int((cx - w / 2) * frame_w)
+                            y1 = int((cy - h / 2) * frame_h)
+                            x2 = int((cx + w / 2) * frame_w)
+                            y2 = int((cy + h / 2) * frame_h)
+                            boxes.append([x1, y1, x2, y2])
+                    
+                    # Aplicar NMS para modelos YOLO
+                    indices_finais = supressao_nao_maxima(np.array(boxes), np.array(scores), self.IOU_THRESHOLD)
+
+                # --- 4. Processar e Desenhar Resultados ---
                 highest_priority_class = None
                 highest_priority = 0
                 detections_count = len(indices_finais)
@@ -329,7 +414,7 @@ class VisionSystem:
                 perf_text = f"Inference: {inference_time*1000:.1f}ms | Detections: {detections_count}"
                 cv2.putText(frame_desenhado, perf_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-                # --- 6. Enviar para PLC com resiliência ---
+                # --- 5. Enviar para PLC com resiliência ---
                 # if self.plc:
                 #     if highest_priority_class:
                 #         # Há detecção - enviar valor da classe detectada
@@ -355,7 +440,7 @@ class VisionSystem:
                 #     else:
                 #         logger.debug(f"⚠️ PLC não inicializado - valor OK não enviado")
 
-                # --- 7. Exibir Frame ---
+                # --- 6. Exibir Frame ---
                 if self.use_opencv_gui and not self.headless:
                     cv2.imshow(self.window_name, frame_desenhado)
                     cv2.moveWindow(self.window_name, 0, 0)
