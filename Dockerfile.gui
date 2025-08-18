@@ -8,6 +8,11 @@ ARG IMAGE_ARCH
 ARG GPU="-vivante"
 ARG NPU="true"
 
+## Install build tools
+RUN apt-get -y update && apt-get install -y \
+    cmake build-essential gcc g++ git wget unzip patchelf \
+    autoconf automake libtool curl gfortran
+
 # Instalar pacotes do sistema
 RUN apt-get -q -y update && \
     apt-get -q -y install --no-install-recommends \
@@ -74,6 +79,9 @@ RUN apt-get -q -y update && \
         libv4l-dev && \
     rm -rf /var/lib/apt/lists/*
 
+RUN apt-get -y update && apt-get install -y \
+    libovxlib
+
 # Configurar locale
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
@@ -115,6 +123,26 @@ RUN chmod +x /tmp/install_delegates.sh && \
     /tmp/install_delegates.sh && \
     rm /tmp/install_delegates.sh
 
+## Install build tools
+RUN apt-get -y update && apt-get install -y \
+    cmake build-essential gcc g++ git wget unzip patchelf \
+    autoconf automake libtool curl gfortran
+
+## Install dependencies
+RUN apt-get -y update && apt-get install -y \
+    zlib1g zlib1g-dev libssl-dev \
+    imx-gpu-viv-wayland-dev openssl libffi-dev libjpeg-dev
+
+WORKDIR /build
+COPY recipes /build
+
+### Install TensorFlow Lite
+RUN chmod +x *.sh
+RUN ./nn-imx_1.3.0.sh
+RUN ./tim-vx.sh
+RUN ./tflite-vx-delegate.sh
+
+WORKDIR /app
 # Configurar variáveis de ambiente para GUI
 ENV DISPLAY=:0
 ENV WAYLAND_DISPLAY=wayland-1
