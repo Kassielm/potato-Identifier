@@ -58,7 +58,7 @@ echo "🔧 Configurando permissões X11..."
 chmod 777 /tmp/.X11-unix 2>/dev/null || true
 chmod 666 /tmp/.X11-unix/* 2>/dev/null || true
 
-# Verificar NPU
+# Verificar NPU e bibliotecas VX
 echo "🧠 Verificando disponibilidade da NPU..."
 if [ -e /sys/bus/platform/devices/38500000.vipsi ] || [ -e /sys/devices/platform/*vipsi* ] 2>/dev/null; then
     export NPU_AVAILABLE=1
@@ -69,6 +69,17 @@ elif grep -q "imx8mp" /proc/cpuinfo 2>/dev/null; then
 else
     export NPU_AVAILABLE=0
     echo "   ⚠️  NPU não detectada"
+fi
+
+# Verificar bibliotecas VX delegate
+echo "🔍 Verificando VX delegate..."
+if [ -f "/usr/lib/libvx_delegate.so" ]; then
+    echo "   ✅ VX delegate encontrado em /usr/lib/libvx_delegate.so"
+elif [ -f "/usr/lib/aarch64-linux-gnu/libvx_delegate.so" ]; then
+    echo "   ✅ VX delegate encontrado em /usr/lib/aarch64-linux-gnu/libvx_delegate.so"
+else
+    echo "   ⚠️  VX delegate não encontrado - NPU indisponível"
+    export NPU_AVAILABLE=0
 fi
 
 # Configurar variáveis de ambiente para GUI
