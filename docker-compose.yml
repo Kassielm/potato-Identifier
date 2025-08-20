@@ -1,24 +1,131 @@
 services:
-  potato-identifier:
-    container_name: potato-identifier
+  potato-identifier-gui:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        APP_ROOT: /app
-    image: kassiell/potato-identifier
-    privileged: true
-    network_mode: "host"
-    devices:
-      - "/dev:/dev"
+    container_name: potato-identifier-gui
+    restart: unless-stopped
+    
+    # Configurações de ambiente
     environment:
-      - "DISPLAY=:0"
-      - "QT_QPA_PLATFORM=wayland"
-      - "WAYLAND_DISPLAY=wayland-1"
-      - "XDG_RUNTIME_DIR=/run/user/1000"
-      - "LD_LIBRARY_PATH=/opt/pylon/lib:/usr/lib"
+      - DISPLAY=:0
+      - CAPTURE_DEVICE=/dev/video2
+      - USE_HW_ACCELERATED_INFERENCE=1
+      - WAYLAND_DISPLAY=wayland-0
+      - XDG_RUNTIME_DIR=/tmp/1000-runtime-dir
+      - XDG_SESSION_TYPE=wayland
+      - QT_QPA_PLATFORM=wayland
+      - GDK_BACKEND=wayland
+      - SDL_VIDEODRIVER=wayland
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - CORAL_ENABLE_EDGETPU=1
+      - NPU_AVAILABLE=1
+      - GUI_AVAILABLE=1
+      - VIPNPU_DEVICE=/dev/vipnpu
+      - VIV_MGPU_KERNEL_CONFIG=1
+      - IMX_VPU_ENABLE_TILE_OPTIMIZE=1
+      - OMP_NUM_THREADS=4
+      - TF_NUM_INTEROP_THREADS=4
+      - TF_NUM_INTRAOP_THREADS=4
+      - PLC_IP=${PLC_IP:-192.168.1.100}
+      - FULLSCREEN_MODE=${FULLSCREEN_MODE:-1}
+      - PLC_RACK=${PLC_RACK:-0}
+      - PLC_SLOT=${PLC_SLOT:-1}
+    
+    # Carregar arquivo de configuração NPU
+    env_file:
+      - ./config/imx8mp-npu.env
+    
+    # Acesso total necessário para configurar permissões
+    privileged: true
+    user: "1000:1000"  # Usar usuário torizon direto
+    
+    # Volumes para GUI e dispositivos
     volumes:
-      - "/tmp/.X11-unix:/tmp/.X11-unix:rw"
-      - "/run/user/1000:/run/user/1000:rw"
-      - "/dev:/dev"
-      - "/opt/pylon_drivers:/opt/pylon"
+      - /tmp:/tmp:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev:rw
+      - /run/udev:/run/udev:ro
+      - /var/run/dbus:/var/run/dbus:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /sys:/sys:ro
+    
+    # Acesso à rede do host para PLC
+    network_mode: host
+    
+    # Recursos de hardware específicos do iMX8MP e câmera USB
+    devices:
+      - /dev/bus/usb:/dev/bus/usb:rw         # Acesso USB para câmeras
+      - /dev/dri:/dev/dri                    # GPU Vivante
+      - /dev/galcore:/dev/galcore            # Galcore GPU driver
+      - /dev/video2:/dev/video2              # Câmera principal
+      - /dev/vipnpu:/dev/vipnpu              # NPU (Neural Processing Unit)
+      - /dev/mxc_hantro:/dev/mxc_hantro      # VPU (Video Processing Unit)
+      - /dev/mxc_hantro_vc8000e:/dev/mxc_hantro_vc8000e  # Encoder VPU
+    
+    # Configurações de segurança
+    security_opt:
+      - seccomp:unconfined
+    
+    # Dependência do compositor Weston
+    depends_on:
+      - weston
+    
+    # Labels para organização
+    labels:
+      - "torizon.app=potato-identifier"
+      - "torizon.gui=true"
+      - "torizon.npu=true"
+      - "torizon.platform=imx8mp"
+
+  weston:
+    image: torizon/weston:3
+    container_name: weston
+    restart: unless-stopped
+    
+    # Configurações do compositor
+    environment:
+      - ACCEPT_FSL_EULA=1
+      - WESTON_DISABLE_ATOMIC=1
+      - WESTON_XWAYLAND=1
+    
+    # Acesso a dispositivos gráficos
+    privileged: true
+    
+    volumes:
+      - /tmp:/tmp:rw
+      - /dev:/dev:rw
+      - /run/udev:/run/udev:ro
+      - /sys:/sys:ro
+    
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/galcore:/dev/galcore
+      - /dev/fb0:/dev/fb0
+    
+    # Configurações de segurança
+    security_opt:
+      - seccomp:unconfined
+    
+    # Labels
+    labels:
+      - "torizon.compositor=weston"
+      - "torizon.platform=imx8mp"
+
+  # Serviço para configurar permissões
+  camera-setup:
+    image: alpine:latest
+    container_name: camera-setup
+    privileged: true
+    volumes:
+      - /dev:/dev:rw
+    command: >
+      sh -c "
+        echo 'Configurando permissões de câmera...' &&
+        chmod 666 /dev/video* 2>/dev/null || true &&
+        echo 'Permissões configuradas!' &&
+        sleep infinity
+      "
+    restart: unless-stopped
+    labels:
+      - "torizon.utility=camera-permissions"

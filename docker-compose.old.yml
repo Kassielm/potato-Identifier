@@ -1,0 +1,24 @@
+services:
+  potato-identifier:
+    container_name: potato-identifier
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_ROOT: /app
+    image: kassiell/potato-identifier
+    privileged: true
+    network_mode: "host"
+    devices:
+      - "/dev:/dev"
+    environment:
+      - "DISPLAY=:0"
+      - "QT_QPA_PLATFORM=wayland"
+      - "WAYLAND_DISPLAY=wayland-1"
+      - "XDG_RUNTIME_DIR=/run/user/1000"
+      - "LD_LIBRARY_PATH=/opt/pylon/lib:/usr/lib"
+    volumes:
+      - "/tmp/.X11-unix:/tmp/.X11-unix:rw"
+      - "/run/user/1000:/run/user/1000:rw"
+      - "/dev:/dev"
+      - "/opt/pylon_drivers:/opt/pylon"

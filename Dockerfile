@@ -1,97 +1,102 @@
-# ARGUMENTS --------------------------------------------------------------------
-##
-# Board architecture
-##
-ARG IMAGE_ARCH=arm64
+# Dockerfile para aplicação GUI na placa Toradex Verdin iMX8MP
+# Baseado em imagem com suporte gráfico para TorizonCore
 
-##
-# Base container version
-##
-ARG BASE_VERSION=4
+# --------------------
+# Stage: tflite-build
+# --------------------
+FROM --platform=linux/arm64/v8 torizon/debian:3-bookworm AS tflite-build
 
-##
-# Directory of the application inside container
-##
-ARG APP_ROOT=
+## Install Python
+RUN apt-get -y update && apt-get install -y \
+  python3 python3-dev python3-numpy python3-pybind11 \
+  python3-pip python3-setuptools python3-wheel \
+  && apt-get clean && apt-get autoremove && rm -rf /var/lib/apt/lists/*
 
-FROM --platform=linux/${IMAGE_ARCH} \
-    torizon/debian:${BASE_VERSION} AS deploy
+## Install build tools
+RUN apt-get -y update && apt-get install -y \
+    cmake build-essential gcc g++ git wget unzip patchelf \
+    autoconf automake libtool curl gfortran
 
-ARG IMAGE_ARCH
-ARG APP_ROOT
+## Install dependencies
+RUN apt-get -y update && apt-get install -y \
+    zlib1g zlib1g-dev libssl-dev \
+    imx-gpu-viv-wayland-dev openssl libffi-dev libjpeg-dev
 
-# Make sure we don't get notifications we can't answer during building.
-ENV DEBIAN_FRONTEND="noninteractive"
+WORKDIR /build
+COPY recipes /build
 
-# Configure apt to handle repository issues
-RUN echo 'APT::Get::Assume-Yes "true";' >> /etc/apt/apt.conf.d/90assumeyes && \
-    echo 'APT::Get::Fix-Broken "true";' >> /etc/apt/apt.conf.d/90fixbroken && \
-    echo 'APT::Install-Recommends "false";' >> /etc/apt/apt.conf.d/90norecommends
+### Install TensorFlow Lite
+RUN chmod +x *.sh
+RUN ./nn-imx_1.3.0.sh
+RUN ./tim-vx.sh
+RUN ./tensorflow-lite_2.9.1.sh
+RUN ./tflite-vx-delegate.sh
+# --------------------
+# Stage: base (runtime GUI)
+# --------------------
+FROM --platform=linux/arm64/v8 torizon/debian:3-bookworm AS base
 
-# Update package lists and install base packages
-RUN apt update --fix-missing -q -y || apt update -q -y
+RUN apt-get -q -y update && apt-get -q -y install --no-install-recommends \
+    python3-minimal python3-pip python3-venv libgl1 libglib2.0-0 libxext6 libxrender1 \
+    libxcb-xinerama0 libxcb-cursor0 python3-setuptools python3-wheel python3-tk \
+    python3-pil python3-pil.imagetk pkg-config libhdf5-dev libatlas-base-dev libopenblas-dev \
+    liblapack-dev libcurl4-openssl-dev libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev \
+    libwebp-dev tcl8.6-dev tk8.6-dev ffmpeg libsm6 libxrender-dev libgl1-mesa-glx libgtk-3-0 \
+    libgdk-pixbuf2.0-0 libxss1 curl udev wget unzip libdrm2 libgbm1 libegl1-mesa libgles2-mesa \
+    mesa-utils file binutils usbutils v4l-utils libv4l-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install required packages
-RUN apt install -q -y \
-    ca-certificates \
-    apt-transport-https \
-    software-properties-common \
-    && apt update -q -y && \
-    apt install -q -y \
-    python3-minimal \
-    python3-pip \
-    python3-venv \
-    python3-tk \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libgstreamer1.0-0 \
-    libgstreamer-plugins-base1.0-0 \
-    libgtk-3-0 \
-    libavcodec-dev \
-    libavformat-dev \
-    libswscale-dev \
-    libv4l-dev \
-    libxvidcore-dev \
-    libx264-dev \
-    qtwayland5 \
-    curl \
-    gnupg \
-    lsb-release \
-    libusb-1.0-0 \
-    udev \
-# DO NOT REMOVE THIS LABEL: this is used for VS Code automation
-    # __torizon_packages_prod_start__
-    # __torizon_packages_prod_end__
-# DO NOT REMOVE THIS LABEL: this is used for VS Code automation
-    && apt clean && apt autoremove && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get -y update && apt-get install -y libovxlib || true
 
-# Install Edge TPU runtime for NPU support on IMX8MP
-RUN echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" | tee /etc/apt/sources.list.d/coral-edgetpu.list && \
-    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/coral-edgetpu-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/coral-edgetpu-archive-keyring.gpg] https://packages.cloud.google.com/apt coral-edgetpu-stable main" | tee /etc/apt/sources.list.d/coral-edgetpu.list && \
-    apt update && \
-    apt install -y libedgetpu1-std && \
-    apt clean && apt autoremove && \
-    rm -rf /var/lib/apt/lists/*
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# Create virtualenv
-RUN python3 -m venv ${APP_ROOT}/.venv --system-site-packages
+WORKDIR /app
+COPY requirements-gui.txt ./
+COPY src/ ./src/
+COPY data/ ./data/
+COPY docker-entrypoint-gui.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# Install pip packages on venv
-COPY requirements-release.txt /requirements-release.txt
-RUN . ${APP_ROOT}/.venv/bin/activate && \
-    pip3 install --upgrade pip && pip3 install -r requirements-release.txt && \
-    rm requirements-release.txt
+# --------------------
+# Stage: final
+# --------------------
+FROM base AS final
 
-# Copy the application source code in the workspace to the $APP_ROOT directory
-# path inside the container, where $APP_ROOT is the torizon_app_root
-# configuration defined in settings.json
-COPY ./src ${APP_ROOT}/src
-COPY data/ ${APP_ROOT}/data/
+# Copy artefacts built in tflite-build
+COPY --from=tflite-build /usr/lib/ /usr/lib/
+COPY --from=tflite-build /build /build
+RUN cp -r /build/* /
 
-WORKDIR ${APP_ROOT}
-ENV APP_ROOT=${APP_ROOT}
+COPY --from=tflite-build /usr/include/ /usr/include/
+RUN apt-get -y update && apt-get install -y \
+    libovxlib
 
-# Activate and run the code
-CMD ["/bin/sh", "-c", ". ${APP_ROOT}/.venv/bin/activate && python3 -u src/main.py"]
+# Create virtualenv and install Python deps
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install Python dependencies with better error handling
+RUN pip install --no-cache-dir -r requirements-gui.txt
+
+# Ensure TensorFlow Lite libraries are accessible
+ENV LD_LIBRARY_PATH="/opt/venv/lib/python3.11/site-packages/tflite_runtime:/usr/lib:/usr/local/lib:${LD_LIBRARY_PATH}"
+ENV PYTHONPATH="/opt/venv/lib/python3.11/site-packages:${PYTHONPATH}"
+
+# GUI / NPU env
+ENV DISPLAY=:0
+ENV WAYLAND_DISPLAY=wayland-1
+ENV XDG_RUNTIME_DIR=/tmp
+ENV XDG_SESSION_TYPE=wayland
+ENV QT_QPA_PLATFORM=wayland
+ENV GDK_BACKEND=wayland
+ENV TF_CPP_MIN_LOG_LEVEL=2
+ENV CORAL_ENABLE_EDGETPU=1
+ENV NPU_AVAILABLE=1
+
+RUN usermod -a -G video,audio,dialout,plugdev torizon || true
+RUN usermod -a -G video,audio,dialout,plugdev root || true
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python3", "src/main.py"]
+
