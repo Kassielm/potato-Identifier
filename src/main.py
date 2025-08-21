@@ -145,9 +145,9 @@ class VisionSystem:
         logger.info("🧠 Carregando modelo TensorFlow Lite...")
         
         # Caminhos dos modelos
-        ssd_model_path = os.path.join(base_dir, 'data', 'models', 'lite-model_ssd_mobilenet_v1_1_metadata_2.tflite')
+        ssd_model_path = os.path.join(base_dir, 'data', 'models', 'best_integer_quant.tflite')
         fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
-        label_path = os.path.join(base_dir, 'data', 'models', 'labelmap.txt')
+        label_path = os.path.join(base_dir, 'data', 'models', 'labels.txt')
 
         # Priorizar modelo SSD MobileNet
         if os.path.exists(ssd_model_path):

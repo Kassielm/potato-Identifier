@@ -34,69 +34,140 @@ RUN ./tflite-vx-delegate.sh
 # --------------------
 # Stage: base (runtime GUI)
 # --------------------
-FROM --platform=linux/arm64/v8 torizon/debian:3-bookworm AS base
 
-RUN apt-get -q -y update && apt-get -q -y install --no-install-recommends \
-    python3-minimal python3-pip python3-venv libgl1 libglib2.0-0 libxext6 libxrender1 \
-    libxcb-xinerama0 libxcb-cursor0 python3-setuptools python3-wheel python3-tk \
-    python3-pil python3-pil.imagetk pkg-config libhdf5-dev libatlas-base-dev libopenblas-dev \
-    liblapack-dev libcurl4-openssl-dev libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev \
-    libwebp-dev tcl8.6-dev tk8.6-dev ffmpeg libsm6 libxrender-dev libgl1-mesa-glx libgtk-3-0 \
-    libgdk-pixbuf2.0-0 libxss1 curl udev wget unzip libdrm2 libgbm1 libegl1-mesa libgles2-mesa \
-    mesa-utils file binutils usbutils v4l-utils libv4l-dev \
-    && rm -rf /var/lib/apt/lists/*
+FROM --platform=linux/arm64 torizon/weston:3 AS base
 
-RUN apt-get -y update && apt-get install -y libovxlib || true
+# Argumentos para configuração
+ARG IMAGE_ARCH
+ARG GPU="-vivante"
+ARG NPU="true"
 
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+## Install build tools
+RUN apt-get -y update && apt-get install -y \
+    cmake build-essential gcc g++ git wget unzip patchelf \
+    autoconf automake libtool curl gfortran
 
-WORKDIR /app
-COPY requirements-gui.txt ./
-COPY src/ ./src/
-COPY data/ ./data/
-COPY docker-entrypoint-gui.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Instalar pacotes do sistema
+RUN apt-get -q -y update && \
+    apt-get -q -y install --no-install-recommends \
+        python3-minimal \
+        python3-pip \
+        python3-dev \
+        python3-venv \
+        libgl1 \
+        libglib2.0-0 \
+        libxext6 \
+        libxrender1 \
+        libxcb-xinerama0 \
+        libxcb-cursor0 \
+        python3-setuptools \
+        python3-wheel \
+        python3-tk \
+        python3-pil \
+        python3-pil.imagetk \
+        build-essential \
+        pkg-config \
+        libhdf5-dev \
+        libc-ares-dev \
+        libeigen3-dev \
+        libatlas-base-dev \
+        libopenblas-dev \
+        liblapack-dev \
+        libcurl4-openssl-dev \
+        libharfbuzz-dev \
+        libfribidi-dev \
+        libfreetype6-dev \
+        libpng-dev \
+        libtiff5-dev \
+        libjpeg-dev \
+        libopenjp2-7-dev \
+        libwebp-dev \
+        tcl8.6-dev \
+        tk8.6-dev \
+        python3-tk \
+        ffmpeg \
+        libsm6 \
+        libxext6 \
+        libxrender-dev \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libgtk-3-0 \
+        libgdk-pixbuf2.0-0 \
+        libxss1 \
+        libgconf-2-4 \
+        curl \
+        udev \
+        wget \
+        unzip \
+        # Pacotes para NPU e GPU
+        libdrm2 \
+        libgbm1 \
+        libegl1-mesa \
+        libgles2-mesa \
+        mesa-utils \
+        file \
+        binutils \
+        # Pacotes para câmera V4L2
+        usbutils \
+        v4l-utils \
+        libv4l-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-# --------------------
-# Stage: final
-# --------------------
-FROM base AS final
-
-# Copy artefacts built in tflite-build
-COPY --from=tflite-build /usr/lib/ /usr/lib/
+## Install TF Lite ##
 COPY --from=tflite-build /build /build
 RUN cp -r /build/* /
+RUN pip3 install --break-system-packages --no-cache-dir /tflite_runtime-*.whl && rm -rf *.whl
 
 COPY --from=tflite-build /usr/include/ /usr/include/
 RUN apt-get -y update && apt-get install -y \
     libovxlib
 
-# Create virtualenv and install Python deps
+# Configurar locale
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# Criar diretório da aplicação
+WORKDIR /app
+
+# Copiar requirements primeiro para cache eficiente
+COPY requirements-gui.txt ./
+
+# Criar e ativar ambiente virtual
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# Instalar dependências Python básicas
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install Python dependencies with better error handling
+# Instalar dependências base
 RUN pip install --no-cache-dir -r requirements-gui.txt
 
-# Ensure TensorFlow Lite libraries are accessible
-ENV LD_LIBRARY_PATH="/opt/venv/lib/python3.11/site-packages/tflite_runtime:/usr/lib:/usr/local/lib:${LD_LIBRARY_PATH}"
-ENV PYTHONPATH="/opt/venv/lib/python3.11/site-packages:${PYTHONPATH}"
+# Copiar código da aplicação
+COPY src/ ./src/
+COPY data/ ./data/
 
-# GUI / NPU env
+# Configurar variáveis de ambiente para GUI
 ENV DISPLAY=:0
 ENV WAYLAND_DISPLAY=wayland-1
 ENV XDG_RUNTIME_DIR=/tmp
 ENV XDG_SESSION_TYPE=wayland
 ENV QT_QPA_PLATFORM=wayland
 ENV GDK_BACKEND=wayland
+
+# Configurações para NPU
 ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV CORAL_ENABLE_EDGETPU=1
 ENV NPU_AVAILABLE=1
 
-RUN usermod -a -G video,audio,dialout,plugdev torizon || true
-RUN usermod -a -G video,audio,dialout,plugdev root || true
+# Configurar permissões para usuário torizon (já existe na imagem base)
+RUN usermod -a -G video,audio,dialout,plugdev torizon
 
+# Permissões para dispositivos (manter root também)
+RUN usermod -a -G video,audio,dialout,plugdev root
+
+# Script de entrada
+COPY docker-entrypoint-gui.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Comando padrão
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python3", "src/main.py"]
-

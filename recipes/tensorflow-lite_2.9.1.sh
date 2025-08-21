@@ -6,7 +6,7 @@ S=${WORKDIR}'/tensorflow-imx'
 SRCBRANCH='lf-5.15.71_2.2.0'
 PYTHON_DIR='/usr/lib/python3.11'
 PYTHON_SITEPACKAGES_DIR=${PYTHON_DIR}'/site-packages'
-BUILD_NUM_JOBS=13
+BUILD_NUM_JOBS=16
 B='/tflite-build'
 B2='/tflite-build-tools'
 CUSTOM_MODEL_DIR="models"
@@ -98,7 +98,7 @@ cd ${B}
 BUILD_NUM_JOBS=${BUILD_NUM_JOBS} ${S}/tensorflow/lite/tools/pip_package/build_pip_package_with_cmake2.sh
 cp ${B}/tflite_pip/dist/tflite_runtime-2.9.1-cp311-cp311-linux_aarch64.whl ${D}/tflite_runtime-2.9.1-cp311-cp311-linux_aarch64.whl
 # Install pip package
-install -d ${D}/${PYTHON_SITEPACKAGES_DIR}
-${STAGING_BINDIR_NATIVE}/pip3 install --disable-pip-version-check -v \
-    -t ${D}/${PYTHON_SITEPACKAGES_DIR} --no-cache-dir --no-deps \
-    ${WORKDIR}/tflite_pip/dist/tflite_runtime-*.whl
+# install -d ${D}/${PYTHON_SITEPACKAGES_DIR}
+# ${STAGING_BINDIR_NATIVE}/pip3 install --disable-pip-version-check -v \
+#     -t ${D}/${PYTHON_SITEPACKAGES_DIR} --no-cache-dir --no-deps \
+#     ${WORKDIR}/tflite_pip/dist/tflite_runtime-*.whl
