@@ -1,6 +1,8 @@
 services:
   potato-identifier-gui:
-    image: kassiell/potato-identifier:2.5
+    build:
+      context: .
+      dockerfile: Dockerfile.gui
     container_name: potato-identifier-gui
     restart: unless-stopped
     

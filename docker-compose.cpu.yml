@@ -1,0 +1,70 @@
+services:
+  potato-identifier-cpu:
+    image: kassiell/potato-identifier:2.3
+    container_name: potato-identifier-cpu
+    restart: unless-stopped
+    
+    # Configurações de ambiente - FORÇANDO CPU APENAS
+    environment:
+      - DISPLAY=:0
+      - CAPTURE_DEVICE=/dev/video2
+      - USE_HW_ACCELERATED_INFERENCE=0
+      - WAYLAND_DISPLAY=wayland-0
+      - XDG_RUNTIME_DIR=/tmp/1000-runtime-dir
+      - XDG_SESSION_TYPE=wayland
+      - QT_QPA_PLATFORM=wayland
+      - GDK_BACKEND=wayland
+      - SDL_VIDEODRIVER=wayland
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - CORAL_ENABLE_EDGETPU=0
+      - NPU_AVAILABLE=0
+      - FORCE_CPU_ONLY=1
+      - GUI_AVAILABLE=1
+      - OMP_NUM_THREADS=4
+      - TF_NUM_INTEROP_THREADS=4
+      - TF_NUM_INTRAOP_THREADS=4
+      - PLC_IP=${PLC_IP:-192.168.1.100}
+      - FULLSCREEN_MODE=${FULLSCREEN_MODE:-1}
+      - PLC_RACK=${PLC_RACK:-0}
+      - PLC_SLOT=${PLC_SLOT:-1}
+    
+    # Acesso total necessário para configurar permissões
+    privileged: true
+    user: "1000:1000"  # Usar usuário torizon direto
+    
+    # Volumes para GUI e dispositivos
+    volumes:
+      - /tmp:/tmp:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev:rw
+      - /run/udev:/run/udev:ro
+      - /var/run/dbus:/var/run/dbus:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /sys:/sys:ro
+    
+    # Configurações de rede
+    network_mode: "host"
+    
+    # Configurações de recursos - LIMITADO PARA CPU
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '1.0'
+          memory: 512M
+    
+    # Portas para debug (se necessário)
+    ports:
+      - "2222:22"
+      - "5005:5005"
+      - "8080:8080"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

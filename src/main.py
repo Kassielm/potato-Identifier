@@ -25,6 +25,7 @@ HEADLESS_MODE = (
 GUI_AVAILABLE = gui_available_env == '1' and not HEADLESS_MODE
 
 NPU_AVAILABLE = os.getenv('NPU_AVAILABLE', '0') == '1'
+FORCE_CPU_ONLY = os.getenv('FORCE_CPU_ONLY', '0') == '1'
 
 print(f"🖥️  Display status:")
 print(f"   WAYLAND_DISPLAY: '{wayland_display}'")
@@ -59,6 +60,7 @@ except ImportError:
 
 print(f"🧠 NPU status:")
 print(f"   NPU_AVAILABLE: {NPU_AVAILABLE}")
+print(f"   FORCE_CPU_ONLY: {FORCE_CPU_ONLY}")
 print(f"   DELEGATES_AVAILABLE: {DELEGATES_AVAILABLE}")
 print(f"   USING_TFLITE_RUNTIME: {USING_TFLITE_RUNTIME}")
 
@@ -163,7 +165,7 @@ class VisionSystem:
         # Configurar delegates para NPU
         delegates = []
         
-        if NPU_AVAILABLE and DELEGATES_AVAILABLE:
+        if NPU_AVAILABLE and DELEGATES_AVAILABLE and not FORCE_CPU_ONLY:
             try:
                 # Tentar carregar delegate NPU (VX)
                 vx_delegate_path = "/usr/lib/libvx_delegate.so"
@@ -184,25 +186,55 @@ class VisionSystem:
                     
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao carregar delegates NPU: {e}")
+        elif FORCE_CPU_ONLY:
+            logger.info("🔄 FORCE_CPU_ONLY ativado - usando apenas CPU")
+        else:
+            logger.info("ℹ️ NPU não disponível - usando CPU")
 
-        try:
-            # Carregar modelo com delegates se disponíveis
-            if delegates:
+        # Estratégia de carregamento com fallback
+        model_loaded = False
+        
+        # Tentar carregar com delegates primeiro
+        if delegates:
+            try:
+                logger.info(f"🔄 Tentando carregar modelo com {len(delegates)} delegate(s)...")
                 self.interpreter = tflite.Interpreter(
                     model_path=primary_model,
                     experimental_delegates=delegates
                 )
-                logger.info(f"✅ Modelo carregado com {len(delegates)} delegate(s)")
-            else:
-                self.interpreter = tflite.Interpreter(model_path=primary_model)
-                logger.info("✅ Modelo carregado em CPU")
+                self.interpreter.allocate_tensors()
+                logger.info(f"✅ Modelo {os.path.basename(primary_model)} carregado com delegate(s)!")
+                model_loaded = True
                 
-            self.interpreter.allocate_tensors()
-            logger.info(f"✅ Modelo {os.path.basename(primary_model)} carregado!")
-            
-        except Exception as e:
-            logger.error(f"Erro ao carregar modelo: {e}")
-            raise e
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao carregar modelo com delegates: {e}")
+                logger.info("🔄 Tentando carregar modelo sem delegates...")
+                
+        # Fallback: carregar sem delegates
+        if not model_loaded:
+            try:
+                self.interpreter = tflite.Interpreter(model_path=primary_model)
+                self.interpreter.allocate_tensors()
+                logger.info(f"✅ Modelo {os.path.basename(primary_model)} carregado em CPU!")
+                model_loaded = True
+                
+            except Exception as e:
+                logger.error(f"❌ Erro ao carregar modelo: {e}")
+                
+                # Tentar modelo alternativo se disponível
+                if primary_model == ssd_model_path and os.path.exists(fallback_model):
+                    logger.info("🔄 Tentando modelo alternativo...")
+                    try:
+                        self.interpreter = tflite.Interpreter(model_path=fallback_model)
+                        self.interpreter.allocate_tensors()
+                        logger.info(f"✅ Modelo alternativo {os.path.basename(fallback_model)} carregado!")
+                        primary_model = fallback_model
+                        model_loaded = True
+                    except Exception as e2:
+                        logger.error(f"❌ Erro ao carregar modelo alternativo: {e2}")
+                        
+        if not model_loaded:
+            raise RuntimeError("Não foi possível carregar nenhum modelo válido")
 
         # Obter detalhes do modelo
         self.input_details = self.interpreter.get_input_details()[0]
