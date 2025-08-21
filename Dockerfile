@@ -35,12 +35,7 @@ RUN ./tflite-vx-delegate.sh
 # Stage: base (runtime GUI)
 # --------------------
 
-FROM --platform=linux/arm64 torizon/weston:3 AS base
-
-# Argumentos para configuração
-ARG IMAGE_ARCH
-ARG GPU="-vivante"
-ARG NPU="true"
+FROM --platform=linux/arm64/v8 torizon/debian:3-bookworm AS base
 
 ## Install build tools
 RUN apt-get -y update && apt-get install -y \

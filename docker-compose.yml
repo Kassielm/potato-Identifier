@@ -1,6 +1,6 @@
 services:
   potato-identifier-gui:
-    image: kassiell/potato-identifier:2.5
+    image: kassiell/potato-identifier:2.6.1
     container_name: potato-identifier-gui
     restart: unless-stopped
     
