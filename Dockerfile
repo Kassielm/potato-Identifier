@@ -137,8 +137,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements-gui.txt
 
 # Copiar código da aplicação
-COPY src/ ./src/
 COPY data/ ./data/
+COPY src/ ./src/
 
 # Configurar variáveis de ambiente para GUI
 ENV DISPLAY=:0

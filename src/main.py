@@ -1,564 +1,404 @@
-import cv2
-import logging
+#!/usr/bin/env python3
+"""
+Aplicação de detecção de objetos em tempo real usando TensorFlow Lite com NPU
+Adaptado do exemplo Torizon para usar apenas OpenCV
+Versão para Verdin iMX8MP
+"""
+
+import sys
 import numpy as np
+from time import time
 import os
-import time
-import threading
+import cv2
 
-# Detectar se está rodando em ambiente headless
-HEADLESS_MODE = os.environ.get('HEADLESS', 'false').lower() == 'true'
-
-# Configuração do modo headless
-wayland_display = os.getenv('WAYLAND_DISPLAY', '')
-x11_display = os.getenv('DISPLAY', '')
-gui_available_env = os.getenv('GUI_AVAILABLE', '1')
-headless_env = os.getenv('HEADLESS', '0')
-
-# Detectar se há interface gráfica disponível
-# Priorizar variável de ambiente explícita, depois verificar displays disponíveis
-HEADLESS_MODE = (
-    headless_env == '1' or
-    (gui_available_env == '0') or
-    (not wayland_display and not x11_display and gui_available_env != '1')
-)
-
-GUI_AVAILABLE = gui_available_env == '1' and not HEADLESS_MODE
-
-NPU_AVAILABLE = os.getenv('NPU_AVAILABLE', '0') == '1'
-FORCE_CPU_ONLY = os.getenv('FORCE_CPU_ONLY', '0') == '1'
-
-print(f"🖥️  Display status:")
-print(f"   WAYLAND_DISPLAY: '{wayland_display}'")
-print(f"   DISPLAY: '{x11_display}'")
-print(f"   HEADLESS_MODE: {HEADLESS_MODE}")
-print(f"   GUI_AVAILABLE: {GUI_AVAILABLE}")
-
-# --- Configuração do Logging ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Tenta importar tflite_runtime primeiro, depois tensorflow.lite como fallback
+# Import tflite runtime
 try:
-    import tflite_runtime.interpreter as tflite
+    import tflite_runtime.interpreter as tf
     USING_TFLITE_RUNTIME = True
+    print("✅ Usando tflite_runtime")
 except ImportError:
     import tensorflow as tf_full
-    tflite = tf_full.lite
+    tf = tf_full.lite
     USING_TFLITE_RUNTIME = False
+    print("⚠️ Usando tensorflow.lite como fallback")
 
-# Importar delegates para NPU
-try:
-    from tflite_runtime.interpreter import load_delegate
-    DELEGATES_AVAILABLE = True
-except ImportError:
-    try:
-        from tensorflow.lite.python.interpreter import load_delegate
-        DELEGATES_AVAILABLE = True
-    except ImportError:
-        DELEGATES_AVAILABLE = False
-        logger.warning("Delegates não disponíveis - rodando apenas em CPU")
+# Configurações via variáveis de ambiente
+USE_HW_ACCELERATED_INFERENCE = True
+if os.environ.get("USE_HW_ACCELERATED_INFERENCE") == "0":
+    USE_HW_ACCELERATED_INFERENCE = False
 
-print(f"🧠 NPU status:")
-print(f"   NPU_AVAILABLE: {NPU_AVAILABLE}")
-print(f"   FORCE_CPU_ONLY: {FORCE_CPU_ONLY}")
-print(f"   DELEGATES_AVAILABLE: {DELEGATES_AVAILABLE}")
-print(f"   USING_TFLITE_RUNTIME: {USING_TFLITE_RUNTIME}")
+MINIMUM_SCORE = float(os.environ.get("MINIMUM_SCORE", default=0.55))
+CAPTURE_DEVICE = os.environ.get("CAPTURE_DEVICE", default="/dev/video0")
+CAPTURE_RESOLUTION_X = int(os.environ.get("CAPTURE_RESOLUTION_X", default=640))
+CAPTURE_RESOLUTION_Y = int(os.environ.get("CAPTURE_RESOLUTION_Y", default=480))
+CAPTURE_FRAMERATE = int(os.environ.get("CAPTURE_FRAMERATE", default=30))
 
-from plc import Plc
+print(f"🔧 Configurações:")
+print(f"   NPU Ativada: {USE_HW_ACCELERATED_INFERENCE}")
+print(f"   Score Mínimo: {MINIMUM_SCORE}")
+print(f"   Dispositivo: {CAPTURE_DEVICE}")
+print(f"   Resolução: {CAPTURE_RESOLUTION_X}x{CAPTURE_RESOLUTION_Y}")
+print(f"   Framerate: {CAPTURE_FRAMERATE}")
 
-# --- Lógica de Caminhos Absolutos ---
-script_dir = os.path.dirname(os.path.abspath(__file__))
-base_dir = os.path.dirname(script_dir)
+def draw_bounding_boxes(img, labels, x1, x2, y1, y2, object_class, score):
+    """Função auxiliar para desenhar bounding boxes"""
+    # Cores para diferentes classes
+    box_colors = [(254,153,143), (253,156,104), (253,157,13), (252,204,26),
+                  (254,254,51), (178,215,50), (118,200,60), (30,71,87),
+                  (1,48,178), (59,31,183), (109,1,142), (129,14,64)]
 
-def supressao_nao_maxima(boxes, scores, iou_threshold):
-    """Aplica Supressão Não-Máxima (NMS) para remover caixas sobrepostas."""
-    if len(boxes) == 0:
-        return []
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = boxes[:, 2]
-    y2 = boxes[:, 3]
-    areas = (x2 - x1) * (y2 - y1)
-    order = scores.argsort()[::-1]
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1)
-        h = np.maximum(0.0, yy2 - yy1)
-        intersection = w * h
-        iou = intersection / (areas[i] + areas[order[1:]] - intersection)
-        inds = np.where(iou <= iou_threshold)[0]
-        order = order[inds + 1]
-    return keep
+    text_colors = [(0,0,0), (0,0,0), (0,0,0), (0,0,0),
+                   (0,0,0), (0,0,0), (0,0,0), (255,255,255),
+                   (255,255,255), (255,255,255), (255,255,255), (255,255,255)]
 
-class VisionSystem:
-    def __init__(self, root=None):
-        self.root = root
-        # Para OpenCV puro, não depender do parâmetro root para determinar GUI
-        self.headless = HEADLESS_MODE
-        self.use_opencv_gui = not self.headless and GUI_AVAILABLE
+    # Garantir que object_class seja válido
+    if object_class >= len(labels):
+        object_class = 0
+    
+    # Desenhar retângulo da detecção
+    cv2.rectangle(img, (x1, y1), (x2, y2),
+                  box_colors[object_class % len(box_colors)], 2)
+    
+    # Preparar texto com label e score
+    label_text = f"{labels[object_class]} ({score:.2f})"
+    text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+    
+    # Desenhar fundo do texto
+    cv2.rectangle(img, (x1, y1 - text_size[1] - 5), (x1 + text_size[0], y1),
+                  box_colors[object_class % len(box_colors)], -1)
+    
+    # Desenhar texto
+    cv2.putText(img, label_text, (x1, y1 - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                text_colors[object_class % len(text_colors)], 1, cv2.LINE_AA)
+
+class ObjectDetector:
+    def __init__(self):
+        """Inicializar detector de objetos"""
+        print("🚀 Inicializando detector de objetos...")
         
-        # Variáveis para OpenCV GUI
-        self.window_name = "Conecsa - Vision System"
-        self.should_quit = False
-
-        logger.info("Iniciando a inicialização do VisionSystem...")
-        logger.info(f"Modo headless: {self.headless}")
-        logger.info(f"Usar OpenCV GUI: {self.use_opencv_gui}")
-        logger.info(f"GUI disponível: {GUI_AVAILABLE}")
-
-        # --- Configurações de Detecção ---
-        self.CONFIDENCE_THRESHOLD = 0.5
-        self.IOU_THRESHOLD = 0.45
-        self.CAMERA_INDEX = 2
+        # Caminhos dos arquivos
+        self.model_path = self._find_model()
+        self.labels_path = self._find_labels()
         
-        # --- Configurações do Sistema ---
-        self.colors = {'OK': (0, 255, 0), 'NOK': (0, 0, 255), 'PEDRA': (255, 0, 0)}
-        self.class_priority = {'PEDRA': 3, 'NOK': 2, 'OK': 1}
-        self.class_values = {'OK': 0, 'NOK': 1, 'PEDRA': 2}
+        # Carregar labels
+        self.labels = self._load_labels()
         
-        # Inicializar recursos
-        self.camera = None
-        self.interpreter = None
-        self.input_details = None
-        self.output_details = None
-        self.input_height = 0
-        self.input_width = 0
-        self.labels = []
+        # Configurar delegate NPU
+        self.delegates = self._setup_delegates()
         
-        # --- Inicializar PLC com resiliência ---
+        # Carregar modelo
+        self.interpreter = self._load_model()
+        
+        # Obter detalhes de entrada e saída
+        self.input_details = self.interpreter.get_input_details()
+        self.output_details = self.interpreter.get_output_details()
+        self.input_size = self.input_details[0]['shape'][1]
+        
+        print(f"✅ Detector inicializado com input size: {self.input_size}")
+        
+    def _find_model(self):
+        """Encontrar arquivo do modelo"""
+        # Buscar modelo na estrutura de diretórios
+        possible_paths = [
+            "data/models/lite-model_ssd_mobilenet_v1_1_metadata_2.tflite",
+            "../data/models/lite-model_ssd_mobilenet_v1_1_metadata_2.tflite",
+            "lite-model_ssd_mobilenet_v1_1_metadata_2.tflite",
+            "data/models/best_float32.tflite",
+            "../data/models/best_float32.tflite",
+            "best_float32.tflite"
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                print(f"📁 Modelo encontrado em: {path}")
+                return path
+        
+        raise FileNotFoundError("❌ Modelo não encontrado! Verifique os caminhos.")
+    
+    def _find_labels(self):
+        """Encontrar arquivo de labels"""
+        possible_paths = [
+            "data/models/labelmap.txt",
+            "../data/models/labelmap.txt", 
+            "labelmap.txt",
+            "data/models/labels.txt",
+            "../data/models/labels.txt",
+            "labels.txt"
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                print(f"📁 Labels encontradas em: {path}")
+                return path
+        
+        raise FileNotFoundError("❌ Arquivo de labels não encontrado!")
+    
+    def _load_labels(self):
+        """Carregar labels do arquivo"""
         try:
-            self.plc = Plc()
-            logger.info("✅ PLC inicializado")
+            with open(self.labels_path, "r") as file:
+                labels = file.read().splitlines()
+            print(f"📋 Carregadas {len(labels)} classes: {labels}")
+            return labels
         except Exception as e:
-            logger.warning(f"Erro ao inicializar PLC - aplicação continuará sem PLC: {e}")
-            self.plc = None
-
-        # --- Inicializar Modelo ---
-        self._initialize_model()
-        
-    def _initialize_model(self):
-        """Inicializar modelo TensorFlow Lite com suporte NPU"""
-        logger.info("🧠 Carregando modelo TensorFlow Lite...")
-        
-        # Caminhos dos modelos
-        ssd_model_path = os.path.join(base_dir, 'data', 'models', 'lite-model_ssd_mobilenet_v1_1_metadata_2.tflite')
-        fallback_model = os.path.join(base_dir, 'data', 'models', 'best_float32.tflite')
-        label_path = os.path.join(base_dir, 'data', 'models', 'labelmap.txt')
-
-        # Priorizar modelo SSD MobileNet
-        if os.path.exists(ssd_model_path):
-            primary_model = ssd_model_path
-            logger.info("🧠 Usando modelo SSD MobileNet v1")
-        elif os.path.exists(fallback_model):
-            primary_model = fallback_model
-            logger.info("� Modelo float32 encontrado como fallback")
-        else:
-            logger.error("❌ Nenhum modelo encontrado!")
-            raise FileNotFoundError("Nenhum modelo válido encontrado")
-
-        # Configurar delegates para NPU
+            print(f"❌ Erro ao carregar labels: {e}")
+            return ["unknown"]
+    
+    def _setup_delegates(self):
+        """Configurar delegates para NPU"""
         delegates = []
         
-        if NPU_AVAILABLE and DELEGATES_AVAILABLE and not FORCE_CPU_ONLY:
+        if USE_HW_ACCELERATED_INFERENCE:
             try:
-                # Tentar carregar delegate NPU (VX)
+                # Tentar carregar VX Delegate (NPU)
                 vx_delegate_path = "/usr/lib/libvx_delegate.so"
                 if os.path.exists(vx_delegate_path):
-                    vx_delegate = load_delegate(vx_delegate_path)
-                    delegates.append(vx_delegate)
-                    logger.info("✅ NPU VX Delegate carregado")
+                    print("🧠 Carregando VX Delegate (NPU)...")
+                    delegates.append(tf.load_delegate(vx_delegate_path))
+                    print("✅ VX Delegate carregado com sucesso!")
                 else:
-                    logger.warning("⚠️ VX Delegate não encontrado em /usr/lib/libvx_delegate.so")
-                
-                # Tentar carregar delegate NNAPI como fallback
-                try:
-                    nnapi_delegate = load_delegate('libnnapi_delegate.so')
-                    delegates.append(nnapi_delegate)
-                    logger.info("✅ NNAPI Delegate carregado como fallback")
-                except:
-                    logger.info("ℹ️ NNAPI Delegate não disponível")
+                    print(f"⚠️ VX Delegate não encontrado em {vx_delegate_path}")
                     
             except Exception as e:
-                logger.warning(f"⚠️ Erro ao carregar delegates NPU: {e}")
-        elif FORCE_CPU_ONLY:
-            logger.info("🔄 FORCE_CPU_ONLY ativado - usando apenas CPU")
+                print(f"❌ Erro ao carregar delegate NPU: {e}")
+                print("🔄 Continuando com CPU...")
         else:
-            logger.info("ℹ️ NPU não disponível - usando CPU")
-
-        # Estratégia de carregamento com fallback
-        model_loaded = False
-        
-        # Tentar carregar com delegates primeiro
-        if delegates:
-            try:
-                logger.info(f"🔄 Tentando carregar modelo com {len(delegates)} delegate(s)...")
-                self.interpreter = tflite.Interpreter(
-                    model_path=primary_model,
-                    experimental_delegates=delegates
+            print("🔄 NPU desabilitada - usando CPU")
+            
+        return delegates
+    
+    def _load_model(self):
+        """Carregar modelo TensorFlow Lite"""
+        try:
+            if self.delegates:
+                print("🔄 Carregando modelo com delegate NPU...")
+                interpreter = tf.Interpreter(
+                    model_path=self.model_path,
+                    experimental_delegates=self.delegates
                 )
-                self.interpreter.allocate_tensors()
-                logger.info(f"✅ Modelo {os.path.basename(primary_model)} carregado com delegate(s)!")
-                model_loaded = True
-                
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao carregar modelo com delegates: {e}")
-                logger.info("🔄 Tentando carregar modelo sem delegates...")
-                
-        # Fallback: carregar sem delegates
-        if not model_loaded:
-            try:
-                self.interpreter = tflite.Interpreter(model_path=primary_model)
-                self.interpreter.allocate_tensors()
-                logger.info(f"✅ Modelo {os.path.basename(primary_model)} carregado em CPU!")
-                model_loaded = True
-                
-            except Exception as e:
-                logger.error(f"❌ Erro ao carregar modelo: {e}")
-                
-                # Tentar modelo alternativo se disponível
-                if primary_model == ssd_model_path and os.path.exists(fallback_model):
-                    logger.info("🔄 Tentando modelo alternativo...")
-                    try:
-                        self.interpreter = tflite.Interpreter(model_path=fallback_model)
-                        self.interpreter.allocate_tensors()
-                        logger.info(f"✅ Modelo alternativo {os.path.basename(fallback_model)} carregado!")
-                        primary_model = fallback_model
-                        model_loaded = True
-                    except Exception as e2:
-                        logger.error(f"❌ Erro ao carregar modelo alternativo: {e2}")
-                        
-        if not model_loaded:
-            raise RuntimeError("Não foi possível carregar nenhum modelo válido")
-
-        # Obter detalhes do modelo
-        self.input_details = self.interpreter.get_input_details()[0]
-        self.output_details = self.interpreter.get_output_details()
-        self.input_height = self.input_details['shape'][1]
-        self.input_width = self.input_details['shape'][2]
-        
-        logger.info(f"Tamanho de entrada do modelo: {self.input_width}x{self.input_height}")
-        logger.info(f"Número de saídas: {len(self.output_details)}")
-        
-        # Log detalhes das saídas para SSD MobileNet
-        for i, output in enumerate(self.output_details):
-            logger.info(f"Saída {i}: shape={output['shape']}, dtype={output['dtype']}")
-
-        # Carregar labels
-        if os.path.exists(label_path):
-            with open(label_path, 'r') as f:
-                self.labels = [line.strip() for line in f.readlines()]
-            logger.info(f"Labels carregadas: {self.labels}")
-        else:
-            logger.warning("Arquivo de labels não encontrado, usando labels padrão")
-            self.labels = ['OK', 'NOK', 'PEDRA']
-
-    def init_camera(self) -> bool:
-        """Inicializar câmera USB usando OpenCV."""
-        logger.info("📷 Inicializando câmera...")
-        
-        # Lista de índices de câmera para tentar
-        camera_indices = [2, 0, 1, 3, 4]
-        
-        for camera_index in camera_indices:
-            try:
-                logger.info(f"Testando câmera no índice {camera_index}...")
-                cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
-                
-                if cap.isOpened():
-                    # Configurar resolução e formato
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                    cap.set(cv2.CAP_PROP_FPS, 30)
-                    
-                    # Tentar configurar formato MJPEG
-                    try:
-                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
-                    except:
-                        logger.info("MJPEG não suportado, usando formato padrão")
-                    
-                    # Testar captura
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        logger.info(f"✅ Câmera USB inicializada no índice {camera_index}")
-                        logger.info(f"Resolução: {frame.shape[1]}x{frame.shape[0]}")
-                        self.camera = cap
-                        self.CAMERA_INDEX = camera_index
-                        
-                        # Configurar janela se GUI disponível
-                        if self.use_opencv_gui:
-                            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-                            
-                            # Verificar modo de exibição da janela
-                            fullscreen_mode = os.getenv('FULLSCREEN_MODE', '1') == '1'
-                            
-                            if fullscreen_mode:
-                                # Modo tela cheia
-                                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                                logger.info("🖥️  Janela configurada para TELA CHEIA")
-                            else:
-                                # Modo janela centralizada
-                                cv2.resizeWindow(self.window_name, 1024, 768)
-                                cv2.moveWindow(self.window_name, 100, 50)
-                                logger.info("🖥️  Janela configurada para modo CENTRALIZADO (1024x768)")
-                        
-                        return True
-                    else:
-                        cap.release()
-                        logger.warning(f"Câmera {camera_index} não conseguiu capturar frame")
-                else:
-                    logger.warning(f"Não foi possível abrir câmera no índice {camera_index}")
-                    
-            except Exception as e:
-                logger.warning(f"Erro ao testar câmera {camera_index}: {e}")
-                continue
-        
-        logger.error("❌ Nenhuma câmera USB funcional encontrada")
-        return False
-
-    def process_frame(self) -> None:
-        """Loop principal de processamento com lógica robusta de PLC."""
-        if not self.interpreter:
-            logger.error("Modelo não inicializado. Saindo do processamento.")
-            return
+            else:
+                print("🔄 Carregando modelo em CPU...")
+                interpreter = tf.Interpreter(model_path=self.model_path)
             
-        # Tentar conectar ao PLC se disponível
-        # if self.plc:
-        #     plc_status = self.plc.init_plc()
-        #     if plc_status:
-        #         logger.info("Sistema iniciado com câmera e PLC")
-        #     else:
-        #         logger.warning("Sistema iniciado apenas com câmera - PLC indisponível")
-
-        logger.info("Iniciando loop da câmera...")
-        
-        while self.camera and self.camera.isOpened() and not self.should_quit:
-            try:
-                ret, frame_original = self.camera.read()
-                if not ret:
-                    logger.warning('Falha ao capturar frame. Tentando novamente...')
-                    continue
-                
-                frame_h, frame_w, _ = frame_original.shape
-                frame_desenhado = frame_original.copy()
-
-                # --- 1. Pré-processamento do Frame ---
-                img_resized = cv2.resize(frame_original, (self.input_width, self.input_height))
-                input_data = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-                
-                # Normalizar dependendo do tipo do modelo
-                if self.input_details['dtype'] == np.uint8:  # Para modelos quantizados (INT8)
-                    input_data = np.expand_dims(input_data, axis=0)
-                else:  # Para modelos float
-                    input_data = np.expand_dims(input_data, axis=0).astype(np.float32) / 255.0
-
-                # --- 2. Executar Inferência ---
-                start_time = time.time()
-                self.interpreter.set_tensor(self.input_details['index'], input_data)
-                self.interpreter.invoke()
-                inference_time = time.time() - start_time
-                
-                # --- 3. Pós-processamento para SSD MobileNet ---
-                # SSD MobileNet tem 4 saídas:
-                # 0: locations/boxes [1, 10, 4] - coordenadas das bounding boxes
-                # 1: classes [1, 10] - IDs das classes detectadas  
-                # 2: scores [1, 10] - scores de confiança
-                # 3: num_detections [1] - número de detecções válidas
-                
-                if len(self.output_details) >= 4:
-                    # Modelo SSD MobileNet com 4 saídas
-                    boxes_output = self.interpreter.get_tensor(self.output_details[0]['index'])[0]  # [10, 4]
-                    classes_output = self.interpreter.get_tensor(self.output_details[1]['index'])[0]  # [10]
-                    scores_output = self.interpreter.get_tensor(self.output_details[2]['index'])[0]  # [10]
-                    num_detections = int(self.interpreter.get_tensor(self.output_details[3]['index'])[0])
-                    
-                    # Processar detecções
-                    boxes, scores, class_ids = [], [], []
-                    
-                    for i in range(min(num_detections, len(scores_output))):
-                        score = scores_output[i]
-                        if score > self.CONFIDENCE_THRESHOLD:
-                            # Converter coordenadas normalizadas para pixels
-                            # SSD MobileNet retorna [y1, x1, y2, x2] normalizado
-                            y1, x1, y2, x2 = boxes_output[i]
-                            x1 = int(x1 * frame_w)
-                            y1 = int(y1 * frame_h)
-                            x2 = int(x2 * frame_w)
-                            y2 = int(y2 * frame_h)
-                            
-                            boxes.append([x1, y1, x2, y2])
-                            scores.append(score)
-                            class_ids.append(int(classes_output[i]))
-                    
-                    # Para SSD MobileNet, NMS já está aplicado internamente
-                    indices_finais = list(range(len(boxes)))
-                    
-                else:
-                    # Fallback para outros modelos (YOLO style)
-                    output = self.interpreter.get_tensor(self.output_details[0]['index'])
-                    output_transposed = output.transpose(0, 2, 1)[0]
-
-                    boxes, scores, class_ids = [], [], []
-                    for row in output_transposed:
-                        confidence = np.max(row[4:])
-                        if confidence > self.CONFIDENCE_THRESHOLD:
-                            class_id = np.argmax(row[4:])
-                            scores.append(confidence)
-                            class_ids.append(class_id)
-                            
-                            cx, cy, w, h = row[:4]
-                            x1 = int((cx - w / 2) * frame_w)
-                            y1 = int((cy - h / 2) * frame_h)
-                            x2 = int((cx + w / 2) * frame_w)
-                            y2 = int((cy + h / 2) * frame_h)
-                            boxes.append([x1, y1, x2, y2])
-                    
-                    # Aplicar NMS para modelos YOLO
-                    indices_finais = supressao_nao_maxima(np.array(boxes), np.array(scores), self.IOU_THRESHOLD)
-
-                # --- 4. Processar e Desenhar Resultados ---
-                highest_priority_class = None
-                highest_priority = 0
-                detections_count = len(indices_finais)
-
-                for i in indices_finais:
-                    box = boxes[i]
-                    x1, y1, x2, y2 = box
-                    label = self.labels[class_ids[i]] if class_ids[i] < len(self.labels) else f'Class_{class_ids[i]}'
-                    score = scores[i]
-                    color = self.colors.get(label, (255, 255, 255))
-                    
-                    cv2.rectangle(frame_desenhado, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(frame_desenhado, f'{label}: {score:.2f}', (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-
-                    priority = self.class_priority.get(label, 0)
-                    if priority > highest_priority:
-                        highest_priority = priority
-                        highest_priority_class = label
-
-                # Adicionar informações de performance
-                perf_text = f"Inference: {inference_time*1000:.1f}ms | Detections: {detections_count}"
-                cv2.putText(frame_desenhado, perf_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-                # --- 5. Enviar para PLC com resiliência ---
-                # if self.plc:
-                #     if highest_priority_class:
-                #         # Há detecção - enviar valor da classe detectada
-                #         plc_data = self.class_values[highest_priority_class]
-                #         success = self.plc.write_db(plc_data)
-                #         if success:
-                #             logger.debug(f"✅ Enviado para PLC: {highest_priority_class} ({plc_data})")
-                #         else:
-                #             logger.debug(f"⚠️ PLC indisponível - valor não enviado: {highest_priority_class} ({plc_data})")
-                #     else:
-                #         # Não há detecção - enviar "OK" (0)
-                #         plc_data = self.class_values['OK']  # 0
-                #         success = self.plc.write_db(plc_data)
-                #         if success:
-                #             logger.debug(f"✅ Enviado para PLC: OK (sem detecções) ({plc_data})")
-                #         else:
-                #             logger.debug(f"⚠️ PLC indisponível - valor OK não enviado ({plc_data})")
-                # else:
-                #     # PLC não disponível
-                #     if highest_priority_class:
-                #         plc_data = self.class_values[highest_priority_class]
-                #         logger.debug(f"⚠️ PLC não inicializado - valor não enviado: {highest_priority_class} ({plc_data})")
-                #     else:
-                #         logger.debug(f"⚠️ PLC não inicializado - valor OK não enviado")
-
-                # --- 6. Exibir Frame ---
-                if self.use_opencv_gui and not self.headless:
-                    cv2.imshow(self.window_name, frame_desenhado)
-                    cv2.moveWindow(self.window_name, 0, 0)
-                    
-                    # Verificar se usuário quer sair
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q') or key == 27:  # 'q' ou ESC
-                        logger.info("Usuário solicitou fechamento da aplicação")
-                        self.should_quit = True
-                        break
-                # else:
-                #     # Modo headless - pausa pequena para não sobrecarregar CPU
-                #     # time.sleep(0.01)
-
-            except Exception as e:
-                logger.error(f"Erro no loop de processamento: {e}")
-                continue
-
-        logger.info("Loop da câmera finalizado")
-
-    def start(self):
-        """Iniciar aplicação"""
-        logger.info("🚀 Iniciando aplicação...")
-        
-        if self.init_camera():
-            logger.info("✅ Câmera inicializada com sucesso")
+            interpreter.allocate_tensors()
+            print("✅ Modelo carregado com sucesso!")
+            return interpreter
             
-            # Iniciar loop principal
-            self.process_frame()
-            
-        else:
-            logger.error("Não foi possível iniciar a câmera. Encerrando.")
-        
-        # Cleanup final
-        self.cleanup()
-
-    def cleanup(self) -> None:
-        """Libera os recursos da câmera, PLC e OpenCV com resiliência."""
-        logger.info("🧹 Limpando recursos...")
-        self.should_quit = True
-        
-        try:
-            if self.camera and self.camera.isOpened():
-                self.camera.release()
-                logger.info("Câmera liberada com sucesso.")
         except Exception as e:
-            logger.error(f"Erro ao fechar câmera: {e}")
+            print(f"❌ Erro ao carregar modelo: {e}")
+            # Fallback sem delegates
+            if self.delegates:
+                print("🔄 Tentando carregar sem delegates...")
+                interpreter = tf.Interpreter(model_path=self.model_path)
+                interpreter.allocate_tensors()
+                print("✅ Modelo carregado em CPU como fallback!")
+                return interpreter
+            else:
+                raise
+    
+    def preprocess_image(self, image_original):
+        """Pré-processar imagem para inferência"""
+        height1, width1 = image_original.shape[:2]
         
-        # try:
-        #     if hasattr(self, 'plc') and self.plc:
-        #         self.plc.disconnect()
-        #         logger.info("Conexão PLC encerrada.")
-        # except Exception as e:
-        #     logger.error(f"Erro ao desconectar PLC: {e}")
+        # Redimensionar mantendo proporção
+        image = cv2.resize(image_original,
+                          (self.input_size, int(self.input_size * height1 / width1)),
+                          interpolation=cv2.INTER_NEAREST)
         
-        try:
-            cv2.destroyAllWindows()
-            logger.info("Recursos de janela liberados com sucesso")
-        except Exception as e:
-            logger.error(f"Erro durante a limpeza de janelas: {e}")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.cleanup()
+        height2 = image.shape[0]
+        scale = height1 / height2
+        border_top = int((self.input_size - height2) / 2)
+        
+        # Adicionar padding
+        image = cv2.copyMakeBorder(image,
+                                  border_top,
+                                  self.input_size - height2 - border_top,
+                                  0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+        
+        # Converter para RGB e normalizar se necessário
+        input_data = np.array([cv2.cvtColor(image, cv2.COLOR_BGR2RGB)], dtype=np.uint8)
+        
+        # Normalizar se modelo for float32
+        if self.input_details[0]['dtype'] == np.float32:
+            input_data = (np.float32(input_data) - 127.5) / 127.5
+        
+        return input_data, scale, border_top, width1
+    
+    def detect_objects(self, image_original):
+        """Realizar detecção de objetos"""
+        # Pré-processar imagem
+        input_data, scale, border_top, width1 = self.preprocess_image(image_original)
+        
+        # Definir entrada
+        self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
+        
+        # Executar inferência
+        start_time = time()
+        self.interpreter.invoke()
+        inference_time = time() - start_time
+        
+        # Verificar tipo de modelo (TF1 vs TF2)
+        outname = self.output_details[0]['name']
+        if 'StatefulPartitionedCall' in outname:  # TF2 model
+            locations_idx, classes_idx, scores_idx, detections_idx = 1, 3, 0, 2
+        else:  # TF1 model
+            locations_idx, classes_idx, scores_idx, detections_idx = 0, 1, 2, 3
+        
+        # Obter resultados
+        locations = (self.interpreter.get_tensor(self.output_details[locations_idx]['index'])[0] * width1).astype(int)
+        locations[locations < 0] = 0
+        locations[locations > width1] = width1
+        
+        classes = self.interpreter.get_tensor(self.output_details[classes_idx]['index'])[0].astype(int)
+        scores = self.interpreter.get_tensor(self.output_details[scores_idx]['index'])[0]
+        n_detections = self.interpreter.get_tensor(self.output_details[detections_idx]['index'])[0].astype(int)
+        
+        # Processar detecções
+        detections = []
+        for i in range(min(n_detections, len(scores))):
+            if scores[i] > MINIMUM_SCORE:
+                y1 = max(0, locations[i, 0] - int(border_top * scale))
+                x1 = max(0, locations[i, 1])
+                y2 = min(image_original.shape[0], locations[i, 2] - int(border_top * scale))
+                x2 = min(image_original.shape[1], locations[i, 3])
+                
+                if x2 > x1 and y2 > y1:  # Validar bbox
+                    detections.append({
+                        'bbox': (x1, y1, x2, y2),
+                        'class': classes[i],
+                        'score': scores[i]
+                    })
+        
+        return detections, inference_time
 
 def main():
-    """Função principal para rodar o sistema de visão."""
-    logger.info("========================================")
-    logger.info("      Iniciando Aplicação Potato ID     ")
-    logger.info("========================================")
+    """Função principal"""
+    print("🚀 Iniciando aplicação de detecção em tempo real...")
     
     try:
-        if HEADLESS_MODE:
-            logger.info("Modo HEADLESS detectado - iniciando sem interface gráfica")
-        else:
-            logger.info("Modo GUI detectado - iniciando com OpenCV GUI")
+        # Inicializar detector
+        detector = ObjectDetector()
+        
+        # Configurar câmera
+        print(f"📷 Configurando câmera: {CAPTURE_DEVICE}")
+        
+        # Tentar diferentes métodos de captura
+        cap = None
+        
+        # Método 1: GStreamer pipeline (recomendado para iMX8MP)
+        try:
+            gst_pipeline = (
+                f'v4l2src device={CAPTURE_DEVICE} '
+                f'! video/x-raw,width={CAPTURE_RESOLUTION_X},height={CAPTURE_RESOLUTION_Y},framerate={CAPTURE_FRAMERATE}/1 '
+                f'! videoconvert '
+                f'! video/x-raw,format=BGR '
+                f'! appsink drop=1'
+            )
+            cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+            if cap.isOpened():
+                print("✅ Câmera configurada com GStreamer")
+            else:
+                cap = None
+        except Exception as e:
+            print(f"⚠️ GStreamer falhou: {e}")
+        
+        # Método 2: V4L2 direto
+        if cap is None:
+            try:
+                device_id = int(CAPTURE_DEVICE.replace('/dev/video', ''))
+                cap = cv2.VideoCapture(device_id)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_RESOLUTION_X)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_RESOLUTION_Y)
+                    cap.set(cv2.CAP_PROP_FPS, CAPTURE_FRAMERATE)
+                    print("✅ Câmera configurada com V4L2")
+                else:
+                    cap = None
+            except Exception as e:
+                print(f"⚠️ V4L2 falhou: {e}")
+        
+        # Método 3: Fallback para câmera padrão
+        if cap is None:
+            cap = cv2.VideoCapture(0)
+            if cap.isOpened():
+                print("✅ Usando câmera padrão (fallback)")
+            else:
+                raise RuntimeError("❌ Não foi possível abrir nenhuma câmera!")
+        
+        # Verificar se está rodando com interface gráfica
+        # headless = os.environ.get('HEADLESS', 'false').lower() == 'true'
+        
+        # if not headless:
+        cv2.namedWindow('Detecção de Objetos', cv2.WINDOW_AUTOSIZE)
+        print("🖥️ Janela OpenCV criada. Pressione 'q' para sair.")
+        # else:
+            # print("🖥️ Modo headless ativado - sem interface gráfica")
+        
+        # Loop principal
+        frame_count = 0
+        fps_counter = time()
+        
+        print("🔄 Iniciando loop de detecção...")
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("❌ Falha ao capturar frame")
+                break
             
-        with VisionSystem() as vision_system:
-            vision_system.start()
+            # Realizar detecção
+            detections, inference_time = detector.detect_objects(frame)
             
+            # Desenhar detecções
+            for detection in detections:
+                x1, y1, x2, y2 = detection['bbox']
+                class_id = detection['class']
+                score = detection['score']
+                
+                draw_bounding_boxes(frame, detector.labels, x1, x2, y1, y2, class_id, score)
+            
+            # Desenhar informações de performance
+            cv2.rectangle(frame, (0, 0), (300, 60), (0, 0, 0), -1)
+            cv2.putText(frame, f"Tempo de inferencia: {inference_time*1000:.1f}ms", 
+                       (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            cv2.putText(frame, f"Deteccoes: {len(detections)}", 
+                       (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            
+            # Calcular FPS a cada 30 frames
+            frame_count += 1
+            if frame_count % 30 == 0:
+                fps = 30 / (time() - fps_counter)
+                fps_counter = time()
+                print(f"📊 FPS: {fps:.1f}, Inferência: {inference_time*1000:.1f}ms, Detecções: {len(detections)}")
+            
+            # if not headless:
+                # Mostrar frame
+            cv2.imshow('Detecção de Objetos', frame)
+            
+            # Verificar teclas
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q') or key == 27:  # 'q' ou ESC
+                break
+            # else:
+            #     # Em modo headless, parar após alguns frames para teste
+            #     if frame_count > 100:  # Rode por 100 frames e pare
+            #         print("🔄 Modo headless - parando após 100 frames")
+            #         break
+    
+    except KeyboardInterrupt:
+        print("\n🛑 Interrompido pelo usuário")
     except Exception as e:
-        logger.critical(f"Erro fatal na execução principal: {e}", exc_info=True)
+        print(f"❌ Erro: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        logger.info("Aplicação finalizada.")
+        # Limpeza
+        if 'cap' in locals() and cap is not None:
+            cap.release()
+        # if not headless:
+        cv2.destroyAllWindows()
+        print("🧹 Recursos liberados")
 
 if __name__ == "__main__":
     main()
