@@ -1,6 +1,6 @@
 services:
   potato-identifier-gui:
-    image: kassiell/potato-identifier:2.8.6
+    image: kassiell/potato-identifier:3.6
     container_name: potato-identifier-gui
     restart: unless-stopped
     
@@ -11,6 +11,7 @@ services:
       - USE_HW_ACCELERATED_INFERENCE=1
       - WAYLAND_DISPLAY=wayland-0
       - XDG_RUNTIME_DIR=/tmp/1000-runtime-dir
+      - USE_GPU_INFERENCE=0
       - XDG_SESSION_TYPE=wayland
       - QT_QPA_PLATFORM=wayland
       - GDK_BACKEND=wayland
